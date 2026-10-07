@@ -261,3 +261,30 @@ dd.good { color: var(--ok) !important; }
   #right { order: 2; display: flex; }
   #left { order: 3; }
 }
+
+/* ---------- v2: pallets, shapes, multi-select ---------- */
+[hidden] { display: none !important; }
+
+h3.sub {
+  font: 8px/1 var(--pixel);
+  color: var(--accent);
+  margin: 14px 0 8px;
+  display: flex; align-items: center; gap: 8px;
+  letter-spacing: 1px;
+}
+.row-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 8px 0; }
+.row-btns button { font-size: 8px; padding: 8px 4px; }
+label.inline input { width: 70px; margin: 0; }
+
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); gap: 0 6px; }
+
+.seg { display: flex; gap: 0; margin-bottom: 10px; }
+.seg button { flex: 1; font-size: 8px; padding: 7px 2px; }
+.seg button.on { background: var(--accent); color: #000; }
+
+.pieces.pallets { max-height: 160px; }
+.pallets li { grid-template-columns: 22px 1fr auto; }
+.pallets .pid { font: 8px var(--pixel); color: #000; background: #d62828; padding: 3px 2px; text-align: center; }
+.pallets .x { font-size: 8px; padding: 3px 5px; color: var(--danger); }
+.pallets .x:disabled { visibility: hidden; }
+.pallets .sub { color: var(--muted); font-size: 11px; display: block; }

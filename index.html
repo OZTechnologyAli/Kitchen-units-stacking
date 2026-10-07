@@ -10,18 +10,28 @@
 </head>
 <body>
   <div id="app">
-    <!-- LEFT: pallet + stats + help -->
+    <!-- LEFT: pallets + stats + help -->
     <aside class="panel" id="left">
       <h1 class="logo">CUPBOARD<br><span>STACKER</span></h1>
 
       <section class="card">
-        <h2>PALLET</h2>
+        <h2>PALLETS</h2>
+        <ul id="palletList" class="pieces pallets"></ul>
+        <div class="row-btns">
+          <button id="btnAddRight" title="Add a pallet to the right of the others">+ PALLET →</button>
+          <button id="btnAddBelow" title="Add a pallet in front of the others">+ PALLET ↓</button>
+        </div>
+        <label class="inline">Gap between pallets (cm)<input type="number" id="pGap" min="0" max="200" step="1"></label>
+
+        <h3 class="sub">SELECTED PALLET <span id="palTag" class="tag"></span></h3>
         <div class="presets" id="palletPresets"></div>
         <div class="grid2">
           <label>Width (cm)<input type="number" id="pW" min="20" max="400" step="1"></label>
           <label>Depth (cm)<input type="number" id="pD" min="20" max="400" step="1"></label>
           <label>Thickness (cm)<input type="number" id="pT" min="1" max="50" step="0.5"></label>
-          <label>Max load ht (cm)<input type="number" id="pMax" min="20" max="400" step="1"></label>
+          <label>Max load ht (cm)<input type="number" id="pMax" min="20" max="400" step="1" title="Applies to every pallet"></label>
+          <label>X (cm)<input type="number" id="pX" step="1"></label>
+          <label>Z (cm)<input type="number" id="pZ" step="1"></label>
         </div>
       </section>
 
@@ -35,6 +45,7 @@
           </div>
         </div>
         <dl class="stats">
+          <dt>Pallets</dt><dd id="sPallets">1</dd>
           <dt>Units</dt><dd id="sUnits">0</dd>
           <dt>Stack height</dt><dd id="sHeight">0 cm</dd>
           <dt>Load volume</dt><dd id="sVol">0 m³</dd>
@@ -51,12 +62,14 @@
           <li><kbd>Shift</kbd>+arrows fine 1 cm</li>
           <li><kbd>Space</kbd> drop / lift</li>
           <li><kbd>R</kbd> rotate 90° &nbsp;<kbd>T</kbd> tip over</li>
+          <li><kbd>Ctrl</kbd>+click multi-select &nbsp;<kbd>Ctrl</kbd>+<kbd>A</kbd> all</li>
+          <li><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> copy / cut / paste</li>
           <li><kbd>N</kbd> new piece &nbsp;<kbd>D</kbd> duplicate</li>
-          <li><kbd>A</kbd> auto-place piece</li>
+          <li><kbd>A</kbd> auto-place selection</li>
           <li><kbd>Tab</kbd> next piece &nbsp;<kbd>Del</kbd> remove</li>
           <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp;<kbd>Esc</kbd> deselect</li>
-          <li><kbd>1</kbd>–<kbd>4</kbd> 3D / top / front / side</li>
-          <li>Mouse: drag a box to pick it up and move it; drag empty space to orbit; wheel to zoom</li>
+          <li><kbd>1</kbd>–<kbd>4</kbd> 3D / plan / front / side</li>
+          <li>Mouse: drag a box to carry it (drags the whole selection); drag a pallet to move it with its load; drag empty space to orbit (pan in plan views); wheel to zoom</li>
         </ul>
       </section>
     </aside>
@@ -66,9 +79,9 @@
       <div class="toolbar">
         <div class="btn-group">
           <button data-view="3d" class="active">3D</button>
-          <button data-view="top">TOP</button>
-          <button data-view="front">FRONT</button>
-          <button data-view="side">SIDE</button>
+          <button data-view="top" title="Top-down plan, true scale">PLAN</button>
+          <button data-view="front" title="Front elevation, true scale">FRONT</button>
+          <button data-view="side" title="Side elevation, true scale">SIDE</button>
         </div>
         <div class="btn-group">
           <button id="btnUndo" title="Undo (Ctrl+Z)">UNDO</button>
@@ -90,12 +103,14 @@
       <section class="card">
         <h2>NEXT PIECE</h2>
         <canvas id="preview" width="220" height="140"></canvas>
+        <div class="seg" id="dShape"></div>
         <div class="presets" id="boxPresets"></div>
         <label>Name<input type="text" id="dName" maxlength="24"></label>
-        <div class="grid3">
-          <label>W (cm)<input type="number" id="dW" min="1" max="400" step="0.5"></label>
+        <div class="grid4">
+          <label><span id="dWLabel">W (cm)</span><input type="number" id="dW" min="1" max="400" step="0.5"></label>
           <label>H (cm)<input type="number" id="dH" min="1" max="400" step="0.5"></label>
-          <label>D (cm)<input type="number" id="dD" min="1" max="400" step="0.5"></label>
+          <label id="dDWrap">D (cm)<input type="number" id="dD" min="1" max="400" step="0.5"></label>
+          <label id="dArmWrap" title="Depth of each arm of the L">Arm (cm)<input type="number" id="dArm" min="1" max="400" step="0.5"></label>
         </div>
         <div class="color-row">
           <input type="color" id="dColor">
@@ -106,13 +121,15 @@
 
       <section class="card" id="selCard">
         <h2>SELECTED <span id="selTag" class="tag"></span></h2>
-        <div id="selEmpty" class="muted">Click a box or press <kbd>Tab</kbd>.</div>
+        <div id="selEmpty" class="muted">Click a box or press <kbd>Tab</kbd>. <kbd>Ctrl</kbd>+click to select several.</div>
         <div id="selBody">
+          <div class="seg" id="sShape"></div>
           <label>Name<input type="text" id="sName" maxlength="24"></label>
-          <div class="grid3">
-            <label>W<input type="number" id="sW" min="1" max="400" step="0.5"></label>
+          <div class="grid4">
+            <label><span id="sWLabel">W</span><input type="number" id="sW" min="1" max="400" step="0.5"></label>
             <label>H<input type="number" id="sH" min="1" max="400" step="0.5"></label>
-            <label>D<input type="number" id="sD" min="1" max="400" step="0.5"></label>
+            <label id="sDWrap">D<input type="number" id="sD" min="1" max="400" step="0.5"></label>
+            <label id="sArmWrap">Arm<input type="number" id="sArm" min="1" max="400" step="0.5"></label>
           </div>
           <div class="grid3">
             <label>X (cm)<input type="number" id="sX" step="0.5"></label>
@@ -135,6 +152,8 @@
               <button id="btnRotate">ROT</button>
               <button id="btnTip">TIP</button>
               <button id="btnAuto">AUTO</button>
+              <button id="btnCopy">COPY</button>
+              <button id="btnPaste">PASTE</button>
               <button id="btnDup">DUP</button>
               <button id="btnDelete" class="danger">DEL</button>
             </div>
