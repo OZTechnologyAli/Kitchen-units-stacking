@@ -907,9 +907,17 @@
     document.querySelectorAll('[data-view]').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
     $('btnUndo').addEventListener('click', undo);
     $('btnAutoAll').addEventListener('click', autoPackAll);
-    $('btnClear').addEventListener('click', () => {
+    // Two-step clear: the first click arms the button, a second click within 3 s clears.
+    let clearArmed = null;
+    $('btnClear').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
       if (!state.boxes.length) return;
-      if (!confirm('Remove every piece from the pallet?')) return;
+      if (!clearArmed) {
+        btn.textContent = 'SURE?';
+        clearArmed = setTimeout(() => { clearArmed = null; btn.textContent = 'CLEAR'; }, 3000);
+        return;
+      }
+      clearTimeout(clearArmed); clearArmed = null; btn.textContent = 'CLEAR';
       pushUndo(); state.boxes = []; selectedId = null; refresh();
       setStatus('Pallet cleared. (Ctrl+Z to undo)');
     });
