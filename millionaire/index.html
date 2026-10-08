@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kim Milyoner Olmak İster?</title>
+<title>Kim Bir Gelecek İnşa Etmek İster?</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap&subset=latin-ext" rel="stylesheet">
@@ -257,15 +257,15 @@
 </style>
 </head>
 <body>
-  <canvas id="scene" width="240" height="180"></canvas>
+  <canvas id="scene" width="241" height="181"></canvas>
   <img id="startScene" alt="İki çocuk oyuncak vinç ve çekiçle ev inşa ediyor">
   <div id="scanlines"></div>
 
   <section id="start">
     <div class="logo">
-      <div class="small">KİM</div>
-      <div class="big">MİLYONER<br>OLMAK</div>
-      <div class="small">İSTER <span class="q">?</span></div>
+      <div class="small">KİM BİR</div>
+      <div class="big">GELECEK<br>İNŞA</div>
+      <div class="small">ETMEK İSTER <span class="q">?</span></div>
     </div>
     <div id="startBar"><button class="btn" id="startBtn">START</button></div>
   </section>
@@ -363,8 +363,8 @@
   };
   bg.src = ASSETS.table.bg;
 
-  // Candle position in the 240x180 pixel grid (where the table lamp stood)
-  const CX = 115, BASE = 104;
+  // Candle position in the 241x181 pixel grid (where the table lamp stood)
+  const CX = 117, BASE = 114;
   const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => v / 16);
   const LEVELS = 6;
 
@@ -389,9 +389,9 @@
         l = l * l * flick;
         // ordered dither into a few light bands for a chunky 8-bit glow
         const q = Math.min(LEVELS, Math.floor(l * LEVELS + BAYER[(y & 3) * 4 + (x & 3)] * 0.6)) / LEVELS;
-        d[i]     = Math.min(255, s[i] * (0.8 + q * 0.7) + q * 40);
-        d[i + 1] = Math.min(255, s[i + 1] * (0.8 + q * 0.5) + q * 18);
-        d[i + 2] = Math.min(255, s[i + 2] * (0.82 + q * 0.1));
+        d[i]     = Math.min(255, s[i] * (0.92 + q * 0.6) + q * 40);
+        d[i + 1] = Math.min(255, s[i + 1] * (0.92 + q * 0.4) + q * 18);
+        d[i + 2] = Math.min(255, s[i + 2] * (0.92 + q * 0.05));
         d[i + 3] = 255;
       }
     }

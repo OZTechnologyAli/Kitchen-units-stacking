@@ -1,7 +1,7 @@
 """Regenerates ../assets.js.
 
     pip install pillow numpy
-    python3 tools/make_assets.py path/to/dinner-photo.jpg path/to/start-image.webp
+    python3 tools/make_assets.py path/to/dinner-image.webp path/to/start-image.webp
 """
 import base64, io, json, mimetypes, os, sys
 sys.path.insert(0, os.path.dirname(__file__))

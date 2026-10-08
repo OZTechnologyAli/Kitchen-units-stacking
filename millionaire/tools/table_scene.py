@@ -1,23 +1,22 @@
-"""8-bit version of the dinner photo, with the table lamp painted out (a pixel candle is drawn in its place at runtime)."""
+"""Table scene for the question screens: the 8-bit dinner image with its table lamp painted out
+(a flickering pixel candle is drawn in its place at runtime)."""
 import numpy as np
-from PIL import Image, ImageEnhance
+from PIL import Image
 
-def table_scene(photo):
-    im = Image.open(photo).convert('RGB')
-    W, H = 240, 180
-    small = im.resize((W, H), Image.BOX)
-    a = np.asarray(small).astype(float)
-    sx = W / im.width; sy = H / im.height
-    # paint out the lamp (original x 905..1025, y 440..870) by interpolating across it
-    x0, x1 = int(905 * sx) - 1, int(1025 * sx) + 1
-    y0, y1 = int(440 * sy) - 1, int(870 * sy) + 1
-    for y in range(y0, y1 + 1):
-        L = a[y, x0 - 1]; R = a[y, x1 + 1]
-        for x in range(x0, x1 + 1):
-            t = (x - x0 + 1) / (x1 - x0 + 2)
-            a[y, x] = L * (1 - t) + R * t
-    small = Image.fromarray(a.clip(0, 255).astype('uint8'))
-    small = ImageEnhance.Color(ImageEnhance.Contrast(small).enhance(1.15)).enhance(1.5)
-    small = ImageEnhance.Brightness(small).enhance(0.8)
-    q = small.quantize(colors=48, method=Image.Quantize.MEDIANCUT, kmeans=4, dither=Image.Dither.NONE).convert('RGB')
-    return np.asarray(q)
+def table_scene(path):
+    im = Image.open(path).convert('RGB')
+    W, H = 241, 181
+    a = np.asarray(im.resize((W, H), Image.BOX)).copy()
+
+    def patch(x0, x1, y0, y1, dx):
+        """Cover a box with the background copied from dx pixels to the side."""
+        a[y0:y1 + 1, x0:x1 + 1] = a[y0:y1 + 1, x0 + dx:x1 + 1 + dx]
+
+    patch(101, 131, 62, 80, 30)   # lamp shade and its glow
+    patch(108, 126, 80, 87, 26)   # stem
+    patch(108, 126, 88, 94, -16)
+    # lamp foot: railing and table edge above, tablecloth below
+    for y in range(95, 116):
+        for x in range(108 if y < 103 else 110, 127 if y < 103 else 124):
+            a[y, x] = a[y, 94] if y < 108 else a[117, x]
+    return a
