@@ -253,7 +253,7 @@
 </style>
 </head>
 <body>
-  <canvas id="scene" width="320" height="240"></canvas>
+  <canvas id="scene" width="240" height="180"></canvas>
   <canvas id="startScene" width="256" height="160"></canvas>
   <div id="scanlines"></div>
 
@@ -359,8 +359,8 @@
   };
   bg.src = ASSETS.table.bg;
 
-  // Candle position in the 320x240 pixel grid (where the table lamp stood)
-  const CX = 154, BASE = 139;
+  // Candle position in the 240x180 pixel grid (where the table lamp stood)
+  const CX = 115, BASE = 104;
   const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => v / 16);
   const LEVELS = 6;
 
@@ -374,9 +374,9 @@
     if (Math.random() < 0.15) sway = Math.round(Math.random() * 2 - 1);
 
     const out = sctx.createImageData(W, H);
-    const s = withBlinks(now), d = out.data;
+    const s = bgData.data, d = out.data;
     const lx = CX + sway * 0.5, ly = BASE - 46;
-    const radius = 84 * flick;
+    const radius = 62 * flick;
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const i = (y * W + x) * 4;
@@ -393,28 +393,6 @@
     }
     sctx.putImageData(out, 0, 0);
     drawCandle(now);
-  }
-
-  // characters blink now and then: patch their closed-eye pixels into a copy of the scene
-  const tableBlinks = ASSETS.table.blinks.map(pix => ({ pix, next: 1000 + Math.random() * 4000, until: 0 }));
-  let work = null;
-  function withBlinks(now) {
-    let any = false;
-    for (const b of tableBlinks) {
-      if (now > b.next) { b.until = now + 160; b.next = now + 2500 + Math.random() * 4500; }
-      if (now < b.until) any = true;
-    }
-    if (!any) return bgData.data;
-    if (!work) work = new Uint8ClampedArray(bgData.data.length);
-    work.set(bgData.data);
-    for (const b of tableBlinks) {
-      if (now >= b.until) continue;
-      for (const [x, y, c] of b.pix) {
-        const i = (y * W + x) * 4;
-        work[i] = parseInt(c.slice(1, 3), 16); work[i + 1] = parseInt(c.slice(3, 5), 16); work[i + 2] = parseInt(c.slice(5, 7), 16);
-      }
-    }
-    return work;
   }
 
   function px(x, y, w, h, c) { sctx.fillStyle = c; sctx.fillRect(x, y, w, h); }
