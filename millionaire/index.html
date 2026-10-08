@@ -48,8 +48,7 @@
   #startScene {
     position: fixed; inset: 0;
     width: 100%; height: 100%;
-    object-fit: cover; object-position: 50% 100%;
-    image-rendering: pixelated;
+    object-fit: cover; object-position: 50% 0%;
   }
   body.playing #startScene { display: none; }
 
@@ -97,6 +96,10 @@
   }
   .btn:hover, .btn:focus-visible { background: var(--gold); color: #000; outline: none; }
   .btn:active { transform: translateY(3px); }
+  @media (min-aspect-ratio: 6/5) {
+    #start { align-items: flex-start; }
+    #start .logo { --logo: min(200px, 26vh, 30vw); }
+  }
   #startBar { position: absolute; left: 0; right: 0; bottom: 3vh; display: flex; justify-content: center; }
   #startBtn { animation: blink 1s steps(2) infinite; }
   #startBtn:hover { animation: none; }
@@ -243,10 +246,11 @@
   }
   /* tall screens: show the whole picture instead of cropping people out */
   @media (max-aspect-ratio: 6/5) {
-    body:not(.playing) { background: #e8d2a8; }
+    body:not(.playing) { background: #4d9fe4; }
     #startScene { object-fit: contain; }
     #scene { object-fit: contain; object-position: 50% 30%; }
-    #start { justify-content: center; padding-bottom: calc(62.5vw + 16px); }
+    #startScene { object-position: 50% 100%; }
+    #start { justify-content: center; padding-bottom: calc(79vw + 16px); }
     #start .logo { --logo: min(300px, 72vw, 42vh); }
     #startBar { position: static; }
   }
@@ -254,7 +258,7 @@
 </head>
 <body>
   <canvas id="scene" width="240" height="180"></canvas>
-  <canvas id="startScene" width="256" height="160"></canvas>
+  <img id="startScene" alt="İki çocuk oyuncak vinç ve çekiçle ev inşa ediyor">
   <div id="scanlines"></div>
 
   <section id="start">
@@ -435,50 +439,14 @@
     px(fx, top + h - 1, 1, 1, "#3c8cff"); // blue root of the flame
   }
 
-  /* ================= START SCREEN: KIDS BUILDING A HOUSE ================= */
-  const S = ASSETS.start;
-  const startCv = $("startScene"), stx = startCv.getContext("2d");
-  const img = src => { const i = new Image(); i.src = src; return i; };
-  const stBg = img(S.bg), stRoof = img(S.roof.src), stArm = S.arm.map(a => img(a.src));
-  const kidBlinks = S.blinks.map(pix => ({ pix, next: 800 + Math.random() * 3000, until: 0 }));
-  const ease = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-
-  function drawStart(now) {
-    if (!stBg.complete || !stRoof.complete) return;
-    stx.drawImage(stBg, 0, 0);
-    // crane: lower the roof onto the walls, hold, lift it again (8s loop)
-    const t = (now / 1000) % 8;
-    const drop = t < 3 ? ease(t / 3) : t < 5 ? 1 : 1 - ease((t - 5) / 3);
-    const land = S.wallTop - stRoof.height + 1, high = 84;
-    const roofY = Math.round(high + (land - high) * drop);
-    const swing = Math.round(Math.sin(now / 500) * 1.5 * (1 - drop));
-    const tx = S.trolleyX;
-    stx.fillStyle = "#24161a"; stx.fillRect(tx - 5, S.jibY + 1, 11, 3);
-    stx.fillStyle = "#8a8a96"; stx.fillRect(tx - 4, S.jibY + 1, 9, 2);
-    stx.fillStyle = "#3a2a20"; stx.fillRect(tx, S.jibY + 4, 1, roofY - S.jibY - 5);
-    stx.fillStyle = "#f8c428"; stx.fillRect(tx - 1, roofY - 3, 3, 2);
-    stx.drawImage(stRoof, tx - Math.floor(stRoof.width / 2) + swing, roofY);
-    // hammering kid
-    const hit = Math.floor(now / 320) % 2;
-    const arm = S.arm[hit];
-    if (stArm[hit].complete) stx.drawImage(stArm[hit], arm.x, arm.y);
-    if (hit) { stx.fillStyle = "#ffffff"; stx.fillRect(arm.x - 2, arm.y + 1, 1, 1); stx.fillRect(arm.x - 3, arm.y + 6, 1, 1); stx.fillRect(arm.x - 1, arm.y + 10, 1, 1); }
-    // remote control LED
-    stx.fillStyle = Math.floor(now / 400) % 2 ? "#ff3030" : "#701010";
-    stx.fillRect(S.led[0] - 1, S.led[1] - 1, 2, 2);
-    // blinking
-    for (const b of kidBlinks) {
-      if (now > b.next) { b.until = now + 150; b.next = now + 2200 + Math.random() * 3500; }
-      if (now < b.until) for (const [x, y, c] of b.pix) { stx.fillStyle = c; stx.fillRect(x, y, 1, 1); }
-    }
-  }
+  /* ================= START SCREEN ================= */
+  $("startScene").src = ASSETS.start.bg;
 
   let lastFrame = 0;
   function loop(now) {
     if (now - lastFrame > 80) { // ~12fps, very 8-bit
       lastFrame = now;
       if (body.classList.contains("playing")) drawScene(now);
-      else drawStart(now);
     }
     requestAnimationFrame(loop);
   }
