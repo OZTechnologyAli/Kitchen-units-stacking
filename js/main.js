@@ -4,10 +4,18 @@
  * right, z runs back to front, y is height above the pallet deck. Pallets and
  * pieces store their back-left(-bottom) corner. Every pallet deck sits at y = 0.
  *
- * Pieces have a shape: 'box', 'cyl' (diameter = w = d) or 'L' (an L-shaped
- * corner unit whose two arms are `arm` deep; `rot` turns it in 90° steps).
- * Footprints are reduced to primitives (rectangles / circles) for all the
- * collision, support and coverage maths.
+ * Piece shapes:
+ *   'cab' — a hollow cabinet carcass: two sides, a back, a base and an optional
+ *           lid, all `board` thick, with an open front. Units can sit inside it.
+ *   'box' — a solid block.   'cyl' — a solid cylinder (diameter = w = d).
+ *   'L'   — a solid L-shaped corner unit whose arms are `arm` deep.
+ * A piece is placed by `tip` (0 upright, 1 lying on its back) then `rot`
+ * (quarter turns in plan). w/h/d always hold the placed bounding size;
+ * origDims() recovers the unit's own width/height/depth.
+ *
+ * Every piece reduces to "parts": rectangles or circles in plan, each with a
+ * local height range. Gravity, collision, support and coverage all work on
+ * parts, which is what lets a unit drop into an open cabinet.
  */
 (function () {
   'use strict';
@@ -18,13 +26,14 @@
   const CLIP_TAG = 'cupboard-stacker/clip';
   const EPS = 0.01;
   const HOVER_GAP = 30;        // how high a lifted piece floats above where it would land
-  const SUPPORT_MIN = 0.6;     // fraction of a piece's base that must rest on something
   const DROP_MS = 160;
   const SAMPLES = 16;          // grid resolution for curved-footprint overlap estimates
   const MARGIN = 150;          // how far off the pallets a piece may wander
+  const BOARD = 1.8;           // default carcass board thickness (18 mm)
 
   const SHAPES = [
-    { key: 'box', label: 'BOX' },
+    { key: 'cab', label: 'CABINET' },
+    { key: 'box', label: 'SOLID BOX' },
     { key: 'cyl', label: 'CYLINDER' },
     { key: 'L', label: 'L-CORNER' },
   ];
@@ -37,16 +46,17 @@
   ];
 
   const BOX_PRESETS = [
-    { name: 'Base 600', shape: 'box', w: 60, h: 72, d: 56, color: '#4f8cff' },
-    { name: 'Base 400', shape: 'box', w: 40, h: 72, d: 56, color: '#3fc1c9' },
-    { name: 'Base 1000', shape: 'box', w: 100, h: 72, d: 56, color: '#5b6cff' },
-    { name: 'Drawer 500', shape: 'box', w: 50, h: 72, d: 56, color: '#2ec4b6' },
-    { name: 'Wall 600', shape: 'box', w: 60, h: 72, d: 32, color: '#ffd23f' },
-    { name: 'Wall 300', shape: 'box', w: 30, h: 72, d: 32, color: '#f4a261' },
-    { name: 'Tall 600', shape: 'box', w: 60, h: 200, d: 56, color: '#9b5de5' },
+    { name: 'Base 600', shape: 'cab', w: 60, h: 72, d: 56, board: BOARD, lid: false, color: '#4f8cff' },
+    { name: 'Base 400', shape: 'cab', w: 40, h: 72, d: 56, board: BOARD, lid: false, color: '#3fc1c9' },
+    { name: 'Base 1000', shape: 'cab', w: 100, h: 72, d: 56, board: BOARD, lid: false, color: '#5b6cff' },
+    { name: 'Drawer 500', shape: 'cab', w: 50, h: 72, d: 56, board: BOARD, lid: false, color: '#2ec4b6' },
+    { name: 'Wall 600', shape: 'cab', w: 60, h: 72, d: 32, board: BOARD, lid: true, color: '#ffd23f' },
+    { name: 'Wall 300', shape: 'cab', w: 30, h: 72, d: 32, board: BOARD, lid: true, color: '#f4a261' },
+    { name: 'Tall 600', shape: 'cab', w: 60, h: 200, d: 56, board: BOARD, lid: true, color: '#9b5de5' },
+    { name: 'Carton 600', shape: 'box', w: 60, h: 40, d: 60, color: '#8d6e63' },
     { name: 'Corner L 900', shape: 'L', w: 90, h: 72, d: 90, arm: 56, color: '#06d6a0' },
     { name: 'Drum Ø60', shape: 'cyl', w: 60, h: 90, d: 60, color: '#e0e0e0' },
-    { name: 'Tube Ø30', shape: 'cyl', w: 30, h: 120, d: 30, color: '#8d6e63' },
+    { name: 'Tube Ø30', shape: 'cyl', w: 30, h: 120, d: 30, color: '#607d8b' },
   ];
 
   const PALETTE = ['#4f8cff', '#3fc1c9', '#2ec4b6', '#06d6a0', '#a3e635', '#ffd23f',
@@ -79,16 +89,40 @@
   const fmt = (v) => `${round1(v)}`;
   const pct = (v) => `${Math.round(v * 1000) / 10}%`;
 
+  // The unit's own [width, height, depth], undoing tip and rotation.
+  function origDims(b) {
+    const W = b.rot % 2 ? b.d : b.w, D = b.rot % 2 ? b.w : b.d;
+    return b.tip ? [W, D, b.h] : [W, b.h, D];
+  }
+  // Set the placed bounding size from the unit's own dimensions.
+  function applyDims(b, W0, H0, D0) {
+    const [W1, H1, D1] = b.tip ? [W0, D0, H0] : [W0, H0, D0];
+    if (b.rot % 2) { b.w = D1; b.d = W1; } else { b.w = W1; b.d = D1; }
+    b.h = H1;
+  }
+
   // Fill in / repair the shape-related fields of a piece or spec.
   function normalizeShape(s) {
     if (!SHAPES.some((x) => x.key === s.shape)) s.shape = 'box';
     s.w = num(s.w, 60); s.h = num(s.h, 72); s.d = num(s.d, 56);
-    if (s.shape === 'cyl') s.d = s.w;
-    s.rot = s.shape === 'L' ? ((s.rot | 0) % 4 + 4) % 4 : 0;
+    s.rot = ((s.rot | 0) % 4 + 4) % 4;
+    s.tip = s.tip ? 1 : 0;
+    const o = origDims(s);
+    if (s.shape === 'cyl') { s.rot = 0; s.tip = 0; o[2] = o[0]; }
+    if (s.shape === 'L') s.tip = 0;
+    applyDims(s, o[0], o[1], o[2]);
     const lim = Math.min(s.w, s.d);
     s.arm = s.shape === 'L'
       ? Math.min(Math.max(num(s.arm, Math.round(lim * 0.6)), 1), Math.max(1, lim - 1))
       : undefined;
+    if (s.shape === 'cab') {
+      const maxB = Math.max(0.1, Math.min(o[0] / 2, o[1] / 2, o[2]) - 0.5);
+      s.board = Math.min(Math.max(num(s.board, BOARD), 0.1), maxB);
+      s.lid = s.lid !== false;
+    } else {
+      s.board = undefined;
+      s.lid = undefined;
+    }
     return s;
   }
 
@@ -97,7 +131,7 @@
       id,
       name: String(raw.name || 'Box').slice(0, 24),
       shape: raw.shape,
-      w: raw.w, h: raw.h, d: raw.d, arm: raw.arm, rot: raw.rot,
+      w: raw.w, h: raw.h, d: raw.d, arm: raw.arm, rot: raw.rot, tip: raw.tip, board: raw.board, lid: raw.lid,
       color: /^#[0-9a-f]{6}$/i.test(raw.color) ? raw.color.toLowerCase() : '#4f8cff',
       x: round1(+raw.x || 0), z: round1(+raw.z || 0), y: +raw.y || 0,
       placed: raw.placed !== false,
@@ -107,7 +141,7 @@
 
   const draft = normalizeShape({ ...BOX_PRESETS[0] });
 
-  // ---------------------------------------------------------------- footprint maths
+  // ---------------------------------------------------------------- geometry
   function overlapLen(a0, a1, b0, b1) {
     return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
   }
@@ -128,6 +162,36 @@
     return { rects, poly };
   }
 
+  // Boards of a box / cabinet as local boxes inside the placed bounding box.
+  function panelsLocal(b) {
+    const [W0, H0, D0] = origDims(b);
+    let list;
+    if (b.shape === 'cab') {
+      const t = b.board;
+      list = [
+        [0, t, 0, H0, 0, D0],                 // left side
+        [W0 - t, W0, 0, H0, 0, D0],           // right side
+        [t, W0 - t, 0, H0, 0, t],             // back
+        [t, W0 - t, 0, t, t, D0],             // base
+      ];
+      if (b.lid) list.push([t, W0 - t, H0 - t, H0, t, D0]);
+    } else {
+      list = [[0, W0, 0, H0, 0, D0]];
+    }
+    list = list.map(([x0, x1, y0, y1, z0, z1]) => ({ x0, x1, y0, y1, z0, z1 }));
+    let H = H0, D = D0, W = W0;
+    if (b.tip) {   // lie on its back: (y, z) -> (z, H - y); the open front faces up
+      list = list.map((p) => ({ x0: p.x0, x1: p.x1, y0: p.z0, y1: p.z1, z0: H - p.y1, z1: H - p.y0 }));
+      [H, D] = [D, H];
+    }
+    for (let i = 0; i < b.rot; i++) {
+      const DD = D;
+      list = list.map((p) => ({ x0: DD - p.z1, x1: DD - p.z0, y0: p.y0, y1: p.y1, z0: p.x0, z1: p.x1 }));
+      [W, D] = [D, W];
+    }
+    return list;
+  }
+
   function localOutline(b) {
     if (b.shape === 'cyl') {
       const r = b.w / 2, pts = [];
@@ -141,17 +205,17 @@
     return [[0, 0], [b.w, 0], [b.w, b.d], [0, b.d]];
   }
 
-  // World-space footprint primitives, memoised on the piece.
+  // World-space parts: plan primitive + local height range, memoised on the piece.
   function parts(b) {
-    const key = `${b.shape}|${b.x}|${b.z}|${b.w}|${b.d}|${b.rot}|${b.arm}`;
+    const key = `${b.shape}|${b.x}|${b.z}|${b.w}|${b.h}|${b.d}|${b.rot}|${b.tip}|${b.arm}|${b.board}|${b.lid}`;
     if (b._pk === key) return b._parts;
     let p;
     if (b.shape === 'cyl') {
-      p = [{ c: 1, cx: b.x + b.w / 2, cz: b.z + b.d / 2, r: b.w / 2, x0: b.x, x1: b.x + b.w, z0: b.z, z1: b.z + b.d }];
+      p = [{ c: 1, cx: b.x + b.w / 2, cz: b.z + b.d / 2, r: b.w / 2, x0: b.x, x1: b.x + b.w, z0: b.z, z1: b.z + b.d, y0: 0, y1: b.h }];
     } else if (b.shape === 'L') {
-      p = localL(b).rects.map((r) => ({ c: 0, x0: b.x + r.x0, x1: b.x + r.x1, z0: b.z + r.z0, z1: b.z + r.z1 }));
+      p = localL(b).rects.map((r) => ({ c: 0, x0: b.x + r.x0, x1: b.x + r.x1, z0: b.z + r.z0, z1: b.z + r.z1, y0: 0, y1: b.h }));
     } else {
-      p = [{ c: 0, x0: b.x, x1: b.x + b.w, z0: b.z, z1: b.z + b.d }];
+      p = panelsLocal(b).map((q) => ({ c: 0, x0: b.x + q.x0, x1: b.x + q.x1, z0: b.z + q.z0, z1: b.z + q.z1, y0: q.y0, y1: q.y1 }));
     }
     Object.defineProperty(b, '_pk', { value: key, writable: true, configurable: true, enumerable: false });
     Object.defineProperty(b, '_parts', { value: p, writable: true, configurable: true, enumerable: false });
@@ -191,58 +255,128 @@
     return (n / (SAMPLES * SAMPLES)) * ox * oz;
   }
 
-  const baseArea = (b) => parts(b).reduce((s, p) => s + primArea(p), 0);
-  const volume = (b) => baseArea(b) * b.h;
+  // True footprint area in plan (the outline, not the sum of boards).
+  function planArea(b) {
+    if (b.shape === 'cyl') return Math.PI * (b.w / 2) ** 2;
+    if (b.shape === 'L') return localL(b).rects.reduce((s, r) => s + (r.x1 - r.x0) * (r.z1 - r.z0), 0);
+    return b.w * b.d;
+  }
+  const envelopeVolume = (b) => planArea(b) * b.h;
+  const partsArea = (b) => parts(b).reduce((s, p) => s + primArea(p), 0);
 
-  function intersects(a, b) {
-    for (const p of parts(a)) for (const q of parts(b)) if (primIntersects(p, q)) return true;
-    return false;
-  }
-  function footprintOverlap(a, b) {
-    let s = 0;
-    for (const p of parts(a)) for (const q of parts(b)) s += primOverlap(p, q);
-    return s;
-  }
+  const bboxOverlap = (a, b) => overlapLen(a.x, a.x + a.w, b.x, b.x + b.w) > EPS && overlapLen(a.z, a.z + a.d, b.z, b.z + b.d) > EPS;
+
   function onPalletArea(b, P) {
     const pp = palletPrim(P);
     return parts(b).reduce((s, p) => s + primOverlap(p, pp), 0);
   }
 
-  // Height a piece would come to rest at if dropped straight down onto `others`.
-  function landingY(box, others) {
+  // Lowest height <= start that `b` can fall to: it stops on the first board
+  // below each of its own boards. Boards above `start` are ignored, so a unit
+  // inside a lidded cabinet stays under the lid.
+  function fallY(b, others, start) {
     let y = 0;
     for (const o of others) {
-      if (o !== box && o.y + o.h > y && intersects(box, o)) y = o.y + o.h;
+      if (o === b || !bboxOverlap(b, o)) continue;
+      for (const p of parts(b)) {
+        for (const q of parts(o)) {
+          const top = o.y + q.y1;
+          if (top - p.y0 > y && top <= start + p.y0 + EPS && primIntersects(p, q)) y = top - p.y0;
+        }
+      }
     }
     return y;
   }
 
-  function supportRatio(b, others) {
-    const area = baseArea(b);
-    let s = 0;
-    if (b.y < EPS) for (const P of state.pallets) s += onPalletArea(b, P);
-    else for (const o of others) if (o !== b && Math.abs(o.y + o.h - b.y) < EPS) s += footprintOverlap(b, o);
-    return Math.min(1, s / area);
+  // If `b` at height y cuts through another piece, step it up onto the
+  // obstruction, repeating until it is clear. This is how a unit slid against
+  // a cabinet's base climbs in through the open front, or onto a piece it hits.
+  function climbY(b, others, y) {
+    for (let iter = 0; iter < 100; iter++) {
+      let next = Infinity;
+      for (const o of others) {
+        if (o === b || !bboxOverlap(b, o)) continue;
+        for (const p of parts(b)) {
+          for (const q of parts(o)) {
+            if (y + p.y0 < o.y + q.y1 - EPS && o.y + q.y0 < y + p.y1 - EPS && primIntersects(p, q)) {
+              next = Math.min(next, o.y + q.y1 - p.y0);
+            }
+          }
+        }
+      }
+      if (next === Infinity) return y;
+      y = next;
+    }
+    return y;
   }
 
-  // Gravity pass. Placed pieces are processed bottom-up in their current order,
-  // each landing on the highest piece below its footprint, so the stack can
-  // never interpenetrate. Pieces in `slid` (nudged sideways) sort after others
-  // at the same level, so they climb onto them rather than pushing them up.
-  // Hovering pieces are then simulated on top, in their own stacking order.
-  function settle(slid) {
-    const list = placedBoxes();
-    list.sort((a, b) => {
-      if (Math.abs(a.y - b.y) > EPS) return a.y - b.y;
-      const sa = !!(slid && slid.has(a.id)), sb = !!(slid && slid.has(b.id));
-      if (sa !== sb) return sa ? 1 : -1;
-      return a.id - b.id;
-    });
-    const done = [];
-    for (const b of list) { b.y = landingY(b, done); done.push(b); }
-    const hov = state.boxes.filter((b) => !b.placed).sort((a, b) => a.hy - b.hy || a.id - b.id);
-    for (const b of hov) { b.y = landingY(b, done); done.push(b); }
+  // Where `b` touches what is under it: contact area, the bounding box of the
+  // contact patches, and whether its centre of weight sits over them.
+  function contact(b, others) {
+    let area = 0, x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    const add = (p, q) => {
+      const a = primOverlap(p, q);
+      if (a <= EPS) return;
+      area += a;
+      x0 = Math.min(x0, Math.max(p.x0, q.x0)); x1 = Math.max(x1, Math.min(p.x1, q.x1));
+      z0 = Math.min(z0, Math.max(p.z0, q.z0)); z1 = Math.max(z1, Math.min(p.z1, q.z1));
+    };
+    for (const p of parts(b)) {
+      const bottom = b.y + p.y0;
+      if (bottom < EPS) {
+        for (const P of state.pallets) add(p, palletPrim(P));
+        continue;
+      }
+      for (const o of others) {
+        if (o === b || !bboxOverlap(b, o)) continue;
+        for (const q of parts(o)) if (Math.abs(o.y + q.y1 - bottom) < EPS) add(p, q);
+      }
+    }
+    // Centre of weight: area-weighted centre of the plan outline.
+    let cx = b.x + b.w / 2, cz = b.z + b.d / 2;
+    if (b.shape === 'L') {
+      let s = 0; cx = 0; cz = 0;
+      for (const r of localL(b).rects) {
+        const a = (r.x1 - r.x0) * (r.z1 - r.z0);
+        cx += a * (b.x + (r.x0 + r.x1) / 2); cz += a * (b.z + (r.z0 + r.z1) / 2); s += a;
+      }
+      cx /= s; cz /= s;
+    }
+    const stable = area > EPS && cx >= x0 - 0.5 && cx <= x1 + 0.5 && cz >= z0 - 0.5 && cz <= z1 + 0.5;
+    const spread = area > EPS ? Math.min((x1 - x0) / b.w, (z1 - z0) / b.d) : 0;
+    return { area, support: Math.min(1, area / planArea(b)), stable, spread };
   }
+
+  // Gravity. Placed pieces are processed bottom-up; each first climbs out of
+  // anything it overlaps, then falls onto whatever is below. Pieces in `slid`
+  // sort after others at the same level. A few passes let the order settle.
+  // Hovering pieces are then dropped from above, in their own stacking order.
+  function settle(slid) {
+    let done = [];
+    for (let pass = 0; pass < 6; pass++) {
+      const list = placedBoxes();
+      list.sort((a, b) => {
+        if (Math.abs(a.y - b.y) > EPS) return a.y - b.y;
+        const sa = !!(slid && slid.has(a.id)), sb = !!(slid && slid.has(b.id));
+        if (sa !== sb) return sa ? 1 : -1;
+        return a.id - b.id;
+      });
+      done = [];
+      let changed = false;
+      for (const b of list) {
+        const y = fallY(b, done, climbY(b, done, b.y));
+        if (Math.abs(y - b.y) > EPS) changed = true;
+        b.y = y;
+        done.push(b);
+      }
+      if (!changed) break;
+    }
+    const hov = state.boxes.filter((b) => !b.placed).sort((a, b) => a.hy - b.hy || a.id - b.id);
+    for (const b of hov) { b.y = fallY(b, done, Infinity); done.push(b); }
+  }
+
+  // Height a piece would land at if dropped from above onto `others`.
+  const landingY = (b, others) => fallY(b, others, Infinity);
 
   function palletBounds() {
     const P = state.pallets;
@@ -277,6 +411,7 @@
     for (const b of state.boxes) {
       b.overhang = b.unstable = b.tooTall = b.aside = false;
       b.palId = null;
+      b.inside = null;
     }
     const per = new Map(state.pallets.map((P) => [P.id, { units: 0, vol: 0, covered: 0 }]));
     for (const b of all) {
@@ -288,15 +423,26 @@
       b.aside = best < EPS;   // parked entirely off the pallets: not part of the load
     }
     const load = all.filter((b) => !b.aside);
-    let vol = 0, top = 0, issues = 0;
+    // A unit whose whole envelope sits inside a cabinet's envelope is nested:
+    // it takes up no extra load space.
+    const within = (b, o) => o !== b && o.shape === 'cab' &&
+      b.x >= o.x - EPS && b.x + b.w <= o.x + o.w + EPS && b.z >= o.z - EPS && b.z + b.d <= o.z + o.d + EPS &&
+      b.y >= o.y - EPS && b.y + b.h <= o.y + o.h + EPS;
     for (const b of load) {
-      const area = baseArea(b);
-      b.overhang = onPalletArea(b, getPallet(b.palId)) < area - 0.5;
-      b.support = supportRatio(b, all);
-      b.unstable = b.support < SUPPORT_MIN;
+      const hosts = load.filter((o) => within(b, o));
+      // the innermost host is the smallest one
+      if (hosts.length) b.inside = hosts.sort((p, q) => p.w * p.h * p.d - q.w * q.h * q.d)[0].id;
+    }
+    let vol = 0, top = 0, issues = 0, nested = 0;
+    for (const b of load) {
+      b.overhang = onPalletArea(b, getPallet(b.palId)) < partsArea(b) - 0.5;
+      const c = contact(b, all);
+      b.support = c.support;
+      b.unstable = !c.stable;
       b.tooTall = b.y + b.h > state.maxH + EPS;
       if (b.overhang || b.unstable || b.tooTall) issues++;
-      const v = area * b.h;
+      if (b.inside != null) { nested++; top = Math.max(top, b.y + b.h); continue; }
+      const v = envelopeVolume(b);
       vol += v;
       top = Math.max(top, b.y + b.h);
       const s = per.get(b.palId);
@@ -332,13 +478,15 @@
       floor: covered / cells,
       density: top > 0 ? vol / (area * top) : null,
       issues,
+      nested,
       per,
     };
   }
 
   // ---------------------------------------------------------------- persistence + undo
   const cleanBox = (b) => ({
-    id: b.id, name: b.name, shape: b.shape, w: b.w, h: b.h, d: b.d, arm: b.arm, rot: b.rot,
+    id: b.id, name: b.name, shape: b.shape, w: b.w, h: b.h, d: b.d, arm: b.arm, rot: b.rot, tip: b.tip,
+    board: b.board, lid: b.lid,
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
@@ -559,9 +707,28 @@
     return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
   }
 
+  // The unit's own size (as built, not as placed).
   function dimsText(b) {
     if (b.shape === 'cyl') return `Ø${fmt(b.w)}×${fmt(b.h)}`;
-    return `${fmt(b.w)}×${fmt(b.h)}×${fmt(b.d)}`;
+    const [W, H, D] = origDims(b);
+    return `${fmt(W)}×${fmt(H)}×${fmt(D)}`;
+  }
+
+  // Merge several (indexed) geometries into one non-indexed geometry.
+  function mergeGeos(geos) {
+    const pos = [], nor = [], uv = [];
+    for (const g of geos) {
+      const n = g.toNonIndexed();
+      pos.push(...n.attributes.position.array);
+      nor.push(...n.attributes.normal.array);
+      uv.push(...n.attributes.uv.array);
+      g.dispose(); n.dispose();
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    out.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    return out;
   }
 
   function buildGeometry(b) {
@@ -573,7 +740,12 @@
       geo.translate(-b.w / 2, b.h / 2, -b.d / 2);
       return geo;
     }
-    return new THREE.BoxGeometry(b.w, b.h, b.d);
+    const geos = panelsLocal(b).map((p) => {
+      const g = new THREE.BoxGeometry(p.x1 - p.x0, p.y1 - p.y0, p.z1 - p.z0);
+      g.translate((p.x0 + p.x1 - b.w) / 2, (p.y0 + p.y1 - b.h) / 2, (p.z0 + p.z1 - b.d) / 2);
+      return g;
+    });
+    return geos.length === 1 ? geos[0] : mergeGeos(geos);
   }
 
   function buildBoxMesh(b) {
@@ -588,8 +760,18 @@
     const ghost = new THREE.LineSegments(edgeGeo, ghostMat);
     ghost.position.y = -HOVER_GAP;
 
-    // Label on the top face: across the box, inside the circle, or on the L's longer arm.
-    let lx = 0, lz = 0, lw = b.w * 0.92, ld = b.d * 0.92;
+    // Label on the top face: across the box, inside the circle, on the L's
+    // longer arm, or on a cabinet's highest flat board (its lid, or the base inside).
+    let lx = 0, lz = 0, lw = b.w * 0.92, ld = b.d * 0.92, ly = b.h / 2;
+    if (b.shape === 'cab') {
+      const flat = panelsLocal(b).filter((p) => p.y1 - p.y0 < Math.min(p.x1 - p.x0, p.z1 - p.z0));
+      const top = flat.sort((p, q) => q.y1 - p.y1 || (q.x1 - q.x0) * (q.z1 - q.z0) - (p.x1 - p.x0) * (p.z1 - p.z0))[0];
+      if (top) {
+        lx = (top.x0 + top.x1 - b.w) / 2; lz = (top.z0 + top.z1 - b.d) / 2;
+        lw = (top.x1 - top.x0) * 0.92; ld = (top.z1 - top.z0) * 0.92;
+        ly = top.y1 - b.h / 2;
+      }
+    }
     if (b.shape === 'cyl') { lw = ld = b.w * 0.68; }
     if (b.shape === 'L') {
       const r = localL(b).rects.slice().sort((p, q) => (q.x1 - q.x0) * (q.z1 - q.z0) - (p.x1 - p.x0) * (p.z1 - p.z0))[0];
@@ -602,7 +784,7 @@
       new THREE.MeshBasicMaterial({ map: textTexture([b.name, dimsText(b)], lw, ld, ink), transparent: true, depthWrite: false })
     );
     label.rotation.x = -Math.PI / 2;
-    label.position.set(lx, b.h / 2 + 0.1, lz);
+    label.position.set(lx, ly + 0.1, lz);
     label.userData.id = b.id;
 
     const group = new THREE.Group();
@@ -620,7 +802,7 @@
       if (!ids.has(id)) { boxRoot.remove(m.group); disposeTree(m.group); meshes.delete(id); }
     }
     for (const b of state.boxes) {
-      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.color}|${b.name}`;
+      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.color}|${b.name}`;
       let m = meshes.get(b.id);
       if (!m || m.key !== key) {
         if (m) { boxRoot.remove(m.group); disposeTree(m.group); }
@@ -755,10 +937,9 @@
   }
 
   function warnFor(b) {
-    const s = supportRatio(b, placedBoxes());
     if (b.aside) return null;
     if (b.overhang) return `${b.name} overhangs its pallet.`;
-    if (s < SUPPORT_MIN) return `${b.name} only ${Math.round(s * 100)}% supported — unstable.`;
+    if (b.unstable) return `${b.name} is not supported under its centre — it would tip.`;
     if (b.y + b.h > state.maxH + EPS) return `${b.name} exceeds the max load height.`;
     return null;
   }
@@ -776,6 +957,7 @@
     refresh();
     const warning = hov.map(warnFor).find(Boolean);
     if (warning) setStatus(warning, true);
+    else if (hov.length === 1 && hov[0].inside != null) setStatus(`${hov[0].name} placed inside #${hov[0].inside}.`);
     else if (hov.length === 1) setStatus(`${hov[0].name} placed at height ${fmt(hov[0].y)} cm.`);
     else setStatus(`${hov.length} pieces placed.`);
   }
@@ -816,7 +998,7 @@
     for (const b of list) {
       const cx = b.x + b.w / 2, cz = b.z + b.d / 2;
       [b.w, b.d] = [b.d, b.w];
-      if (b.shape === 'L') b.rot = (b.rot + 1) & 3;
+      if (b.shape !== 'cyl') b.rot = (b.rot + 1) & 3;
       b.x = -cz - b.w / 2;          // (x, z) -> (-z, x)
       b.z = cx - b.d / 2;
     }
@@ -831,16 +1013,23 @@
   function tipSelected() {
     const list = selectedBoxes();
     if (!list.length) return;
-    const boxes = list.filter((b) => b.shape === 'box');
-    if (!boxes.length) return setStatus('Only boxes can be tipped over.', true);
+    const boxes = list.filter((b) => b.shape === 'box' || b.shape === 'cab');
+    if (!boxes.length) return setStatus('Cylinders and L-corners stay upright; only cabinets and boxes tip.', true);
     pushUndo();
-    for (const b of boxes) [b.h, b.d] = [b.d, b.h];
+    for (const b of boxes) {
+      const o = origDims(b);
+      b.tip ^= 1;
+      applyDims(b, o[0], o[1], o[2]);
+    }
     shiftGroup(boxes, 0, 0);
     settle(new Set(boxes.map((b) => b.id)));
     refresh();
+    const one = boxes[0];
     setStatus(boxes.length < list.length
-      ? `Tipped ${boxes.length} box(es); cylinders and L-corners stay upright.`
-      : boxes.length === 1 ? `${boxes[0].name} tipped over: now ${fmt(boxes[0].h)} cm tall.` : `${boxes.length} boxes tipped over.`);
+      ? `Tipped ${boxes.length} piece(s); cylinders and L-corners stay upright.`
+      : boxes.length > 1 ? `${boxes.length} pieces tipped.`
+      : one.tip ? `${one.name} laid on its back${one.shape === 'cab' ? ' — open side up' : ''}: now ${fmt(one.h)} cm tall.`
+      : `${one.name} stood upright: now ${fmt(one.h)} cm tall.`);
   }
 
   function deleteSelected() {
@@ -898,44 +1087,54 @@
   }
 
   // --- auto placement
+  // Placements auto-place may try for a piece: quarter turns in plan, keeping
+  // its current tip (a cabinet the user laid on its back stays on its back).
   function orientations(b) {
-    if (b.shape === 'cyl') return [{ w: b.w, d: b.d, rot: 0 }];
-    if (b.shape === 'L') return [0, 1, 2, 3].map((k) => ({ rot: (b.rot + k) & 3, w: k % 2 ? b.d : b.w, d: k % 2 ? b.w : b.d }));
-    return b.w === b.d ? [{ w: b.w, d: b.d, rot: 0 }] : [{ w: b.w, d: b.d, rot: 0 }, { w: b.d, d: b.w, rot: 0 }];
+    const o = origDims(b);
+    const rots = b.shape === 'cyl' ? [0] : b.shape === 'box' && !b.tip && o[0] === o[2] ? [0] : b.shape === 'box' ? [0, 1] : [0, 1, 2, 3];
+    return rots.map((rot) => {
+      const c = { shape: b.shape, tip: b.tip, rot, arm: b.arm, board: b.board, lid: b.lid, w: 0, h: 0, d: 0 };
+      applyDims(c, o[0], o[1], o[2]);
+      return c;
+    });
   }
 
-  // Best resting spot for `b`: lowest, then earliest pallet, then furthest
-  // back, then furthest left; fully on one pallet, well supported and under
-  // the height limit. Returns null if nothing fits.
   function better(a, b) {
     if (Math.abs(a.y - b.y) > EPS) return a.y < b.y;
     if (a.pi !== b.pi) return a.pi < b.pi;
     if (Math.abs(a.z - b.z) > EPS) return a.z < b.z;
     return a.x < b.x - EPS;
   }
+
+  // Best resting spot for `b`: lowest, then earliest pallet, then furthest
+  // back, then furthest left; fully on one pallet, balanced, broadly supported
+  // and under the height limit. Candidate positions line up with every board
+  // edge, so units are tried inside open cabinets too. Returns null if none.
   function findSpot(b, others) {
     let best = null;
     state.pallets.forEach((P, pi) => {
-      for (const o of orientations(b)) {
-        const { w, d } = o;
+      for (const c of orientations(b)) {
+        const { w, d } = c;
         if (w > P.w + EPS || d > P.d + EPS) continue;
-        const xs = new Set([P.x, P.x + P.w - w]);
-        const zs = new Set([P.z, P.z + P.d - d]);
+        const xs = new Set([P.x, round1(P.x + P.w - w)]);
+        const zs = new Set([P.z, round1(P.z + P.d - d)]);
         for (const q of others) {
-          xs.add(q.x + q.w); xs.add(q.x - w); xs.add(q.x);
-          zs.add(q.z + q.d); zs.add(q.z - d); zs.add(q.z);
+          for (const r of parts(q)) {
+            xs.add(round1(r.x1)); xs.add(round1(r.x0 - w)); xs.add(round1(r.x0));
+            zs.add(round1(r.z1)); zs.add(round1(r.z0 - d)); zs.add(round1(r.z0));
+          }
         }
-        for (const x of xs) {
-          if (x < P.x - EPS || x + w > P.x + P.w + EPS) continue;
-          for (const z of zs) {
-            if (z < P.z - EPS || z + d > P.z + P.d + EPS) continue;
-            const c = { shape: b.shape, w, d, h: b.h, rot: o.rot, arm: b.arm, x, z, y: 0 };
-            c.y = landingY(c, others);
-            if (c.y + b.h > state.maxH + EPS) continue;
-            c.pi = pi;
-            if (best && !better(c, best)) continue;
-            if (supportRatio(c, others) < SUPPORT_MIN) continue;
-            best = c;
+        const xl = [...xs].filter((x) => x >= P.x - EPS && x + w <= P.x + P.w + EPS);
+        const zl = [...zs].filter((z) => z >= P.z - EPS && z + d <= P.z + P.d + EPS);
+        for (const x of xl) {
+          for (const z of zl) {
+            const t = { ...c, x, z, y: 0, pi };
+            t.y = landingY(t, others);
+            if (t.y + t.h > state.maxH + EPS) continue;
+            if (best && !better(t, best)) continue;
+            const k = contact(t, others);
+            if (!k.stable || k.spread < 0.7) continue;
+            best = t;
           }
         }
       }
@@ -948,12 +1147,12 @@
     const spot = findSpot(b, others);
     if (!spot) return false;
     const from = displayY(b);
-    Object.assign(b, { x: round1(spot.x), z: round1(spot.z), w: spot.w, d: spot.d, rot: spot.rot, y: spot.y, placed: true });
+    Object.assign(b, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, y: spot.y, placed: true });
     anim.set(b.id, { from, start: performance.now() });
     return true;
   }
 
-  const packOrder = (list) => [...list].sort((a, b) => baseArea(b) - baseArea(a) || b.h - a.h || a.id - b.id);
+  const packOrder = (list) => [...list].sort((a, b) => envelopeVolume(b) - envelopeVolume(a) || b.h - a.h || a.id - b.id);
 
   function autoPlaceSelected() {
     const list = selectedBoxes();
@@ -1081,6 +1280,40 @@
     $(`${prefix}WLabel`).textContent = shape === 'cyl' ? 'Ø (cm)' : prefix === 'd' ? 'W (cm)' : 'W';
     $(`${prefix}DWrap`).hidden = shape === 'cyl';
     $(`${prefix}ArmWrap`).hidden = shape !== 'L';
+    $(`${prefix}BoardWrap`).hidden = shape !== 'cab';
+    $(`${prefix}LidWrap`).hidden = shape !== 'cab';
+  }
+
+  // Isometric drawing of a box / cabinet as its boards, back to front.
+  function drawPanelsPreview(g, W, H) {
+    const c30 = Math.cos(Math.PI / 6), s30 = 0.5;
+    const proj = (x, y, z) => [(x - z) * c30, (x + z) * s30 - y];
+    const { w, h, d, color } = draft;
+    const all = [];
+    for (const x of [0, w]) for (const y of [0, h]) for (const z of [0, d]) all.push(proj(x, y, z));
+    const xs = all.map((p) => p[0]), ys = all.map((p) => p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const s = Math.min((W - 40) / (maxX - minX), (H - 30) / (maxY - minY));
+    const ox = (W - (maxX - minX) * s) / 2 - minX * s, oy = (H - 14 - (maxY - minY) * s) / 2 - minY * s;
+    const P = (x, y, z) => { const p = proj(x, y, z); return [ox + p[0] * s, oy + p[1] * s]; };
+    const n = parseInt(color.slice(1), 16);
+    const shade = (k) => {
+      const f = (v) => Math.min(255, v * k) | 0;
+      return `rgb(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)})`;
+    };
+    const face = (pts, k) => {
+      g.beginPath();
+      pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])));
+      g.closePath();
+      g.fillStyle = shade(k); g.fill();
+      g.lineWidth = 1.5; g.strokeStyle = '#000'; g.stroke();
+    };
+    const panels = panelsLocal(draft).sort((a, b) => a.x0 + a.y0 + a.z0 - (b.x0 + b.y0 + b.z0));
+    for (const p of panels) {
+      face([P(p.x1, p.y0, p.z0), P(p.x1, p.y1, p.z0), P(p.x1, p.y1, p.z1), P(p.x1, p.y0, p.z1)], 0.62);
+      face([P(p.x0, p.y0, p.z1), P(p.x1, p.y0, p.z1), P(p.x1, p.y1, p.z1), P(p.x0, p.y1, p.z1)], 0.85);
+      face([P(p.x0, p.y1, p.z0), P(p.x1, p.y1, p.z0), P(p.x1, p.y1, p.z1), P(p.x0, p.y1, p.z1)], 1.15);
+    }
   }
 
   // Isometric drawing of the next piece: extruded outline, painter-sorted faces.
@@ -1089,6 +1322,17 @@
     const g = cv.getContext('2d');
     const W = cv.width, H = cv.height;
     g.clearRect(0, 0, W, H);
+    const caption = draft.shape === 'cyl' ? `Ø${fmt(draft.w)} × ${fmt(draft.h)} H`
+      : draft.shape === 'L' ? `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D · arm ${fmt(draft.arm)}`
+      : draft.shape === 'cab' ? `${fmt(draft.w)}×${fmt(draft.h)}×${fmt(draft.d)} · ${fmt(draft.board)} board · ${draft.lid ? 'lid' : 'open top'}`
+      : `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D`;
+    const writeCaption = () => {
+      g.fillStyle = '#8592c4';
+      g.font = '11px ui-monospace, Menlo, Consolas, monospace';
+      g.textAlign = 'center';
+      g.fillText(caption, W / 2, H - 6);
+    };
+    if (draft.shape === 'box' || draft.shape === 'cab') { drawPanelsPreview(g, W, H); writeCaption(); return; }
     const { h, color } = draft;
     const outline = localOutline(draft);
     const c30 = Math.cos(Math.PI / 6), s30 = 0.5;
@@ -1141,13 +1385,7 @@
       g.stroke();
     }
     face(outline.map(([x, z]) => P(x, h, z)), shade(color, 1.15), true);
-    g.fillStyle = '#8592c4';
-    g.font = '11px ui-monospace, Menlo, Consolas, monospace';
-    g.textAlign = 'center';
-    const txt = draft.shape === 'cyl' ? `Ø${fmt(draft.w)} × ${fmt(h)} H`
-      : draft.shape === 'L' ? `${fmt(draft.w)} W × ${fmt(h)} H × ${fmt(draft.d)} D · arm ${fmt(draft.arm)}`
-      : `${fmt(draft.w)} W × ${fmt(h)} H × ${fmt(draft.d)} D`;
-    g.fillText(txt, W / 2, H - 6);
+    writeCaption();
   }
 
   function syncDraftInputs() {
@@ -1155,6 +1393,8 @@
     $('dName').value = draft.name;
     $('dW').value = draft.w; $('dH').value = draft.h; $('dD').value = draft.d;
     $('dArm').value = draft.arm || '';
+    $('dBoard').value = draft.board || '';
+    $('dLid').checked = !!draft.lid;
     $('dColor').value = draft.color;
     markSwatch($('dSwatches'), draft.color);
     markShape($('dShape'), draft.shape);
@@ -1200,7 +1440,10 @@
     tag.classList.toggle('hover', anyHover);
     const setIfIdle = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v; };
     setIfIdle('sName', b.name);
-    setIfIdle('sW', b.w); setIfIdle('sH', b.h); setIfIdle('sD', b.d); setIfIdle('sArm', b.arm || '');
+    const [W0, H0, D0] = origDims(b);
+    setIfIdle('sW', W0); setIfIdle('sH', H0); setIfIdle('sD', D0); setIfIdle('sArm', b.arm || '');
+    setIfIdle('sBoard', b.board || '');
+    $('sLid').checked = !!b.lid;
     setIfIdle('sX', b.x); setIfIdle('sZ', b.z);
     $('sY').value = round1(b.y);
     setIfIdle('sColor', b.color);
@@ -1208,14 +1451,14 @@
     markShape($('sShape'), b.shape);
     shapeFields('s', b.shape);
     $('btnDrop').textContent = anyHover ? 'DROP' : 'LIFT';
-    $('btnTip').disabled = !selectedBoxes().some((x) => x.shape === 'box');
+    $('btnTip').disabled = !selectedBoxes().some((x) => x.shape === 'box' || x.shape === 'cab');
 
     const warns = [];
     if (n > 1) warns.push(`${n} pieces selected — changes apply to all. Showing #${b.id}.`);
     if (b.aside) warns.push('Set aside — not on a pallet');
     else if (b.placed) {
       if (b.overhang) warns.push('⚠ Overhangs its pallet');
-      if (b.unstable) warns.push(`⚠ Only ${Math.round(b.support * 100)}% of its base is supported`);
+      if (b.unstable) warns.push(`⚠ Nothing under its centre (${Math.round(b.support * 100)}% contact) — it would tip`);
       if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(state.maxH)} cm limit`);
     } else {
       warns.push('Hovering — press Space / DROP to place');
@@ -1254,7 +1497,7 @@
         f.textContent = `⚠ ${flags.join(', ')}`;
         li.children[1].appendChild(f);
       }
-      li.children[2].textContent = `${dimsText(b)}${b.palId && state.pallets.length > 1 ? ` · P${palIndex.get(b.palId)}` : ''}`;
+      li.children[2].textContent = `${dimsText(b)}${b.inside != null ? ` · in #${b.inside}` : ''}${b.palId && state.pallets.length > 1 ? ` · P${palIndex.get(b.palId)}` : ''}`;
       li.addEventListener('click', (e) => {
         if (e.ctrlKey || e.metaKey) toggleSelected(b.id);
         else setSelection([b.id], b.id);
@@ -1273,6 +1516,7 @@
     $('sFloor').textContent = pct(st.floor);
     $('sDensity').textContent = st.density == null ? '–' : pct(st.density);
     $('sIssues').textContent = st.issues;
+    $('sNested').textContent = st.nested;
     $('sIssues').classList.toggle('bad', st.issues > 0);
     $('sIssues').classList.toggle('good', st.issues === 0 && st.units > 0);
     $('sFill').textContent = pct(st.fill);
@@ -1357,12 +1601,13 @@
       if (p.shape === 'cyl') btn.firstChild.style.borderRadius = '50%';
       btn.appendChild(document.createTextNode(p.name.toUpperCase()));
       btn.title = p.shape === 'cyl' ? `Ø${p.w} × ${p.h} H cm` : `${p.w} W × ${p.h} H × ${p.d} D cm`;
-      btn.addEventListener('click', () => { Object.assign(draft, p, { rot: 0 }); syncDraftInputs(); });
+      btn.addEventListener('click', () => { Object.assign(draft, p, { rot: 0, tip: 0 }); syncDraftInputs(); });
       bp.appendChild(btn);
     }
     buildShapeSeg($('dShape'), (shape) => { draft.shape = shape; draft.arm = undefined; syncDraftInputs(); });
     $('dName').addEventListener('input', (e) => { draft.name = e.target.value || 'Box'; });
-    [['dW', 'w'], ['dH', 'h'], ['dD', 'd'], ['dArm', 'arm']].forEach(([id, key]) => {
+    $('dLid').addEventListener('change', (e) => { draft.lid = e.target.checked; drawPreview(); });
+    [['dW', 'w'], ['dH', 'h'], ['dD', 'd'], ['dArm', 'arm'], ['dBoard', 'board']].forEach(([id, key]) => {
       $(id).addEventListener('input', (e) => {
         draft[key] = num(e.target.value, draft[key]);
         if (draft.shape === 'cyl') draft.d = draft.w;
@@ -1378,9 +1623,12 @@
     // selected pieces
     buildShapeSeg($('sShape'), (shape) => editSelected((b) => {
       if (b.shape === shape) return;
-      b.shape = shape; b.arm = undefined; b.rot = 0;
+      const o = origDims(b);
+      b.shape = shape; b.arm = undefined; b.rot = 0; b.tip = 0;
+      applyDims(b, o[0], o[1], o[2]);
       if (shape === 'cyl') b.d = b.w;
     }));
+    $('sLid').addEventListener('change', (e) => editSelected((b) => { if (b.shape === 'cab') b.lid = e.target.checked; }));
     buildSwatches($('sSwatches'), (c) => editSelected((b) => { b.color = c; }));
     let colorEditing = false;
     $('sColor').addEventListener('input', (e) => {
@@ -1391,19 +1639,24 @@
     });
     $('sColor').addEventListener('change', () => { colorEditing = false; });
     $('sName').addEventListener('change', (e) => editSelected((b) => { b.name = (e.target.value || 'Box').slice(0, 24); }));
-    [['sW', 'w'], ['sH', 'h'], ['sD', 'd'], ['sArm', 'arm']].forEach(([id, key]) => {
+    // W/H/D edit the unit's own size; the placed size follows its tip and rotation.
+    const DIM = { w: 0, h: 1, d: 2 };
+    [['sW', 'w'], ['sH', 'h'], ['sD', 'd'], ['sArm', 'arm'], ['sBoard', 'board']].forEach(([id, key]) => {
       $(id).addEventListener('change', (e) => {
         const v = num(e.target.value, null);
         if (v != null) {
           editSelected((b) => {
-            if (key === 'arm' && b.shape !== 'L') return;
+            if (key === 'arm') { if (b.shape === 'L') b.arm = v; return; }
+            if (key === 'board') { if (b.shape === 'cab') b.board = v; return; }
             if (key === 'd' && b.shape === 'cyl') return;
-            b[key] = v;
-            if (b.shape === 'cyl' && key === 'w') b.d = v;
+            const o = origDims(b);
+            o[DIM[key]] = v;
+            if (b.shape === 'cyl' && key === 'w') o[2] = v;
+            applyDims(b, o[0], o[1], o[2]);
           });
         }
         const p = primary();
-        if (p) e.target.value = p[key] || '';
+        if (p) e.target.value = key in DIM ? origDims(p)[DIM[key]] : p[key] || '';
       });
     });
     [['sX', 'x'], ['sZ', 'z']].forEach(([id, key]) => {

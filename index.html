@@ -51,6 +51,7 @@
           <dt>Load volume</dt><dd id="sVol">0 m³</dd>
           <dt>Floor covered</dt><dd id="sFloor">0%</dd>
           <dt>Packing density</dt><dd id="sDensity">–</dd>
+          <dt>Nested units</dt><dd id="sNested">0</dd>
           <dt>Issues</dt><dd id="sIssues">0</dd>
         </dl>
       </section>
@@ -61,7 +62,8 @@
           <li><kbd>←↑↓→</kbd> move (camera-relative)</li>
           <li><kbd>Shift</kbd>+arrows fine 1 cm</li>
           <li><kbd>Space</kbd> drop / lift</li>
-          <li><kbd>R</kbd> rotate 90° &nbsp;<kbd>T</kbd> tip over</li>
+          <li><kbd>R</kbd> rotate 90° &nbsp;<kbd>T</kbd> tip onto its back</li>
+          <li>Cabinets are hollow: drop a smaller unit into an open-top one, or slide it in through the open front with the arrows</li>
           <li><kbd>Ctrl</kbd>+click multi-select &nbsp;<kbd>Ctrl</kbd>+<kbd>A</kbd> all</li>
           <li><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> copy / cut / paste</li>
           <li><kbd>N</kbd> new piece &nbsp;<kbd>D</kbd> duplicate</li>
@@ -111,7 +113,9 @@
           <label>H (cm)<input type="number" id="dH" min="1" max="400" step="0.5"></label>
           <label id="dDWrap">D (cm)<input type="number" id="dD" min="1" max="400" step="0.5"></label>
           <label id="dArmWrap" title="Depth of each arm of the L">Arm (cm)<input type="number" id="dArm" min="1" max="400" step="0.5"></label>
+          <label id="dBoardWrap" title="Thickness of the carcass boards">Board (cm)<input type="number" id="dBoard" min="0.1" max="10" step="0.1"></label>
         </div>
+        <label class="check" id="dLidWrap"><input type="checkbox" id="dLid"> Lid (top panel)</label>
         <div class="color-row">
           <input type="color" id="dColor">
           <div class="swatches" id="dSwatches"></div>
@@ -130,7 +134,9 @@
             <label>H<input type="number" id="sH" min="1" max="400" step="0.5"></label>
             <label id="sDWrap">D<input type="number" id="sD" min="1" max="400" step="0.5"></label>
             <label id="sArmWrap">Arm<input type="number" id="sArm" min="1" max="400" step="0.5"></label>
+            <label id="sBoardWrap">Board<input type="number" id="sBoard" min="0.1" max="10" step="0.1"></label>
           </div>
+          <label class="check" id="sLidWrap"><input type="checkbox" id="sLid"> Lid (top panel)</label>
           <div class="grid3">
             <label>X (cm)<input type="number" id="sX" step="0.5"></label>
             <label>Z (cm)<input type="number" id="sZ" step="0.5"></label>
