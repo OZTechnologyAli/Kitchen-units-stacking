@@ -8,6 +8,7 @@ A small 3D browser game for working out how to stack kitchen cupboards on a pall
 
 - **The pallet** is a flat red sheet, 10 cm thick by default. You can change its width, depth, thickness and maximum load height. There are presets for EURO, UK, half and US pallets. A dashed cyan box shows the space you're allowed to fill.
 - **No pallet:** untick **Use pallets** to size a load without one. Pieces stand on the floor and a dashed box around them shows the space they take up, with the size written underneath (the score panel also shows **Load size**). **AUTO-PACK ALL** then packs every piece as tightly as it can, side by side, stacked up to the max load height and nested where they fit, choosing the layout with the smallest floor area. **MAKE PALLET THIS SIZE** turns pallets back on with one pallet sized to the load.
+- **Pack inside a set space:** with no pallet, tick **Pack inside a set space** and set its width, depth and height, or pick a preset (small van, long van, Luton, 20 ft container; the sizes are approximate, so edit them to match yours). The space is drawn as a solid cyan box. **AUTO-PACK ALL** fills it from the floor up (stacking and nesting where allowed), lays tall units on their backs if they can't stand under its height, and sets anything that doesn't fit beside it. Pieces outside the space are flagged, and **volume filled** is measured against the space.
 - **Pack just some pieces:** select the pieces you want (Ctrl+click, or **SELECT ALL THIS COLOUR** to pick every piece of one colour), then press **AUTO** or **A**. With no pallet, they're packed together beside the rest and the status bar shows the space they need.
 - **More pallets:** use **+ PALLET →** or **+ PALLET ↓** to add a pallet beside or in front of the others, with an optional gap. Click a pallet to edit its size or position, or drag it with the mouse; the pieces on it move with it.
 - **Cabinets are hollow carcasses.** Each one is built from boards: two sides, a back and a base, plus a lid you can switch on or off. The front is open. You set its width, height, depth and the board thickness (1.8 cm, i.e. 18 mm, by default). Because the middle is empty, you can put one unit inside another:
@@ -22,7 +23,7 @@ A small 3D browser game for working out how to stack kitchen cupboards on a pall
 - **The score panel** shows:
   - how much of the allowed volume is filled
   - the stack height
-  - the load volume in m³
+  - the load volume in m³ (the space the load really takes up, so units nested inside others, fully or partly, aren't counted twice)
   - how much of the pallet floor is covered
   - packing density
   - how many units are nested completely inside another (these add no load volume)

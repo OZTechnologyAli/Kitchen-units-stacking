@@ -18,10 +18,19 @@
         <h2>PALLETS</h2>
         <label class="check"><input type="checkbox" id="usePallets"> Use pallets</label>
         <div id="noPalletBox">
-          <p class="muted note">No pallet: pieces stand on the floor. <b>AUTO-PACK ALL</b> packs them tightly; the dashed box shows the space they need.</p>
+          <p class="muted note">No pallet: pieces stand on the floor. <b>AUTO-PACK ALL</b> packs them tightly; the dashed box shows the space they need. Tick <b>Pack inside a set space</b> to make them fit a fixed size instead.</p>
           <div class="caption">Load size</div>
           <div class="load-size" id="loadSize">–</div>
           <button id="btnFitPallet" class="primary wide">MAKE PALLET THIS SIZE</button>
+          <label class="check space-toggle" title="Give the load a fixed space (a van, a crate…) that AUTO-PACK ALL must fit inside"><input type="checkbox" id="fitOn"> Pack inside a set space</label>
+          <div id="fitBox">
+            <div class="presets" id="fitPresets"></div>
+            <div class="grid3">
+              <label>W (cm)<input type="number" id="fitW" min="10" max="2000" step="1"></label>
+              <label>D (cm)<input type="number" id="fitD" min="10" max="2000" step="1"></label>
+              <label>H (cm)<input type="number" id="fitH" min="10" max="1000" step="1"></label>
+            </div>
+          </div>
         </div>
         <div id="palletEdit">
         <ul id="palletList" class="pieces pallets"></ul>
@@ -41,7 +50,7 @@
           <label>Thickness (cm)<input type="number" id="pT" min="1" max="50" step="0.5"></label>
         </div>
         </div>
-        <label>Max load height (cm)<input type="number" id="pMax" min="20" max="400" step="1" title="Applies to every pallet, and to the stack when there is no pallet"></label>
+        <label id="pMaxWrap">Max load height (cm)<input type="number" id="pMax" min="20" max="400" step="1" title="Applies to every pallet, and to the stack when there is no pallet"></label>
       </section>
 
       <section class="card">

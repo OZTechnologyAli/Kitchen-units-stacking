@@ -299,3 +299,4 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--ac
 button.wide:not(.primary) { width: 100%; margin-top: 8px; }
 #btnFitPallet { font-size: 8px; line-height: 1.4; }
 #btnStackMode.off { background: var(--danger); color: #000; }
+.space-toggle { margin-top: 12px; }

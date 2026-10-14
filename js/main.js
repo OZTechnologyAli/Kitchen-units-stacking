@@ -59,6 +59,14 @@
     { name: 'Tube Ø30', shape: 'cyl', w: 30, h: 120, d: 30, color: '#607d8b' },
   ];
 
+  // Approximate internal load spaces (W × D × H cm); edit the numbers to match yours.
+  const SPACE_PRESETS = [
+    { name: 'SMALL VAN', w: 250, d: 150, h: 130 },
+    { name: 'LONG VAN', w: 340, d: 170, h: 180 },
+    { name: 'LUTON', w: 400, d: 200, h: 210 },
+    { name: '20FT CONT.', w: 590, d: 235, h: 239 },
+  ];
+
   const PALETTE = ['#4f8cff', '#3fc1c9', '#2ec4b6', '#06d6a0', '#a3e635', '#ffd23f',
                    '#f4a261', '#9b5de5', '#f15bb5', '#e0e0e0', '#8d6e63', '#607d8b'];
 
@@ -69,6 +77,8 @@
     gap: 0,
     noPallet: false,  // size a load on the open floor, with no pallet
     allowStack: true, // false: nothing may rest on top of another unit
+    // No-pallet mode: an optional fixed space (a van, a crate…) the load must fit in.
+    fit: { on: false, w: 340, d: 170, h: 180 },
     boxes: [],      // { id, name, shape, w, h, d, arm, rot, color, x, z, y, placed, hy }
     nextId: 1,
     nextPalletId: 2,
@@ -393,9 +403,22 @@
     return { ...groupBounds(list), y1: Math.max(...list.map((b) => b.y + b.h)) };
   }
 
+  const fitOn = () => state.noPallet && state.fit.on;
+  // The fixed space as a pallet-like rectangle with its back-left corner at 0,0.
+  const fitRect = () => ({ id: 0, x: 0, z: 0, w: state.fit.w, d: state.fit.d });
+  // Areas auto-pack fills: the pallets, or the fixed space.
+  const packAreas = () => (fitOn() ? [fitRect()] : state.pallets);
+  // How high the load may go.
+  const heightLimit = () => (fitOn() ? state.fit.h : state.maxH);
+
   // The area the scene is framed around: the pallets, or in no-pallet mode
   // the load itself (with a sensible minimum).
   function palletBounds() {
+    if (fitOn()) {
+      const L = loadBounds();
+      const F = { x0: 0, x1: state.fit.w, z0: 0, z1: state.fit.d };
+      return L ? { x0: Math.min(F.x0, L.x0), x1: Math.max(F.x1, L.x1), z0: Math.min(F.z0, L.z0), z1: Math.max(F.z1, L.z1) } : F;
+    }
     if (state.noPallet) {
       const L = loadBounds() || { x0: 0, x1: 120, z0: 0, z1: 80 };
       const cx = (L.x0 + L.x1) / 2, cz = (L.z0 + L.z1) / 2;
@@ -429,10 +452,42 @@
     for (const b of list) { b.x = round1(b.x + dx); b.z = round1(b.z + dz); }
   }
 
+  // Space the load really takes up: the union of every piece's outer envelope
+  // (a cabinet's envelope includes its hollow), measured on a 2 cm grid, so a
+  // unit nested fully or partly inside another is only counted once.
+  function occupiedVolume(list) {
+    if (!list.length) return 0;
+    const C = 2;
+    const G = groupBounds(list);
+    const nx = Math.ceil((G.x1 - G.x0) / C), nz = Math.ceil((G.z1 - G.z0) / C);
+    const ny = Math.ceil(Math.max(...list.map((b) => b.y + b.h)) / C);
+    if (nx * ny * nz > 8e6) return list.reduce((s, b) => s + envelopeVolume(b), 0);   // too big to grid
+    const grid = new Uint8Array(nx * ny * nz);
+    for (const b of list) {
+      const prims = b.shape === 'cyl' || b.shape === 'L' ? parts(b)
+        : [{ c: 0, x0: b.x, x1: b.x + b.w, z0: b.z, z1: b.z + b.d }];
+      const y0 = Math.max(0, Math.round(b.y / C)), y1 = Math.min(ny, Math.round((b.y + b.h) / C));
+      for (const p of prims) {
+        const x0 = Math.max(0, Math.round((p.x0 - G.x0) / C)), x1 = Math.min(nx, Math.round((p.x1 - G.x0) / C));
+        const z0 = Math.max(0, Math.round((p.z0 - G.z0) / C)), z1 = Math.min(nz, Math.round((p.z1 - G.z0) / C));
+        for (let z = z0; z < z1; z++) {
+          for (let x = x0; x < x1; x++) {
+            if (p.c && !inPrim(p, G.x0 + (x + 0.5) * C, G.z0 + (z + 0.5) * C)) continue;
+            const base = (z * nx + x) * ny;
+            grid.fill(1, base + y0, base + Math.max(y0, y1));
+          }
+        }
+      }
+    }
+    let n = 0;
+    for (let i = 0; i < grid.length; i++) n += grid[i];
+    return n * C * C * C;
+  }
+
   function analyse() {
     const all = placedBoxes();
     for (const b of state.boxes) {
-      b.overhang = b.unstable = b.tooTall = b.aside = false;
+      b.overhang = b.unstable = b.tooTall = b.aside = b.outside = false;
       b.onNoStack = null;
       b.palId = null;
       b.inside = null;
@@ -465,8 +520,10 @@
       b.support = c.support;
       b.unstable = !c.stable;
       b.onNoStack = c.onNoStack ? c.onNoStack.id : null;
-      b.tooTall = b.y + b.h > state.maxH + EPS;
-      if (b.overhang || b.unstable || b.tooTall || b.onNoStack != null) issues++;
+      b.tooTall = b.y + b.h > heightLimit() + EPS;
+      // With a fixed space, every piece must sit within its floor area.
+      b.outside = fitOn() && (b.x < -EPS || b.z < -EPS || b.x + b.w > state.fit.w + EPS || b.z + b.d > state.fit.d + EPS);
+      if (b.overhang || b.unstable || b.tooTall || b.outside || b.onNoStack != null) issues++;
       if (b.inside != null) { nested++; top = Math.max(top, b.y + b.h); continue; }
       const v = envelopeVolume(b);
       vol += v;
@@ -478,11 +535,12 @@
     // Floor coverage: rasterise footprints at 1 cm over each pallet (or, with
     // no pallet, over the load's own footprint rectangle).
     const L = loadBounds();
-    const floors = state.noPallet
-      ? (L ? [{ id: 0, x: L.x0, z: L.z0, w: L.x1 - L.x0, d: L.z1 - L.z0 }] : [])
+    const floors = fitOn() ? [fitRect()]
+      : state.noPallet ? (L ? [{ id: 0, x: L.x0, z: L.z0, w: L.x1 - L.x0, d: L.z1 - L.z0 }] : [])
       : state.pallets;
     if (state.noPallet) per.set(0, { units: 0, vol: 0, covered: 0 });
     let covered = 0, cells = 0, area = 0;
+    vol = occupiedVolume(load);
     for (const P of floors) {
       const nx = Math.ceil(P.w), nz = Math.ceil(P.d);
       const grid = new Uint8Array(nx * nz);
@@ -506,7 +564,7 @@
       units: load.length,
       vol,
       top,
-      fill: area ? vol / (area * state.maxH) : 0,
+      fill: area ? vol / (area * heightLimit()) : 0,
       floor: cells ? covered / cells : 0,
       density: top > 0 && area ? vol / (area * top) : null,
       size: L ? { w: L.x1 - L.x0, d: L.z1 - L.z0, h: L.y1 } : null,
@@ -523,7 +581,7 @@
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
-    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet, allowStack: state.allowStack,
+    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet, allowStack: state.allowStack, fit: state.fit,
     boxes: state.boxes.map(cleanBox), nextId: state.nextId, nextPalletId: state.nextPalletId,
   });
 
@@ -543,6 +601,8 @@
     state.gap = Math.max(0, +data.gap || 0);
     state.noPallet = !!data.noPallet;
     state.allowStack = data.allowStack !== false;
+    const f = data.fit || {};
+    state.fit = { on: !!f.on, w: num(f.w, 340), d: num(f.d, 170), h: num(f.h, 180) };
     let maxId = 0;
     state.boxes = data.boxes.map((b) => {
       const id = Number.isInteger(b.id) ? b.id : ++maxId;
@@ -737,8 +797,9 @@
   // showing the space the load takes up, with its size written in front.
   function buildLoadOutline() {
     floorGrid.position.set(0, -0.05, 0);
+    if (fitOn()) buildSpaceOutline();
     const L = loadBounds();
-    if (!L) return;
+    if (!L || fitOn()) return;
     const w = L.x1 - L.x0, d = L.z1 - L.z0, h = L.y1;
     const cx = (L.x0 + L.x1) / 2 - origin.x, cz = (L.z0 + L.z1) / 2 - origin.z;
     const box = new THREE.LineSegments(
@@ -753,6 +814,36 @@
       new THREE.PlaneGeometry(lw, lh),
       new THREE.MeshBasicMaterial({
         map: textTexture([`${fmt(w)} × ${fmt(d)} × ${fmt(h)} cm`], lw, lh, '#3ff0ff'),
+        transparent: true, depthWrite: false,
+      })
+    );
+    label.rotation.x = -Math.PI / 2;
+    label.position.set(cx, 0.2, cz + d / 2 + lh / 2 + 4);
+    palletGroup.add(label);
+  }
+
+  // The fixed space: solid cyan edges, a faint floor and its size in front.
+  function buildSpaceOutline() {
+    const { w, d, h } = state.fit;
+    const cx = w / 2 - origin.x, cz = d / 2 - origin.z;
+    const box = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)),
+      new THREE.LineBasicMaterial({ color: 0x3ff0ff, transparent: true, opacity: 0.9 })
+    );
+    box.position.set(cx, h / 2, cz);
+    palletGroup.add(box);
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, d),
+      new THREE.MeshBasicMaterial({ color: 0x3ff0ff, transparent: true, opacity: 0.08, depthWrite: false })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(cx, 0.05, cz);
+    palletGroup.add(floor);
+    const lw = Math.max(80, Math.min(w, 180)), lh = 16;
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(lw, lh),
+      new THREE.MeshBasicMaterial({
+        map: textTexture([`SPACE ${fmt(w)} × ${fmt(d)} × ${fmt(h)} cm`], lw, lh, '#3ff0ff'),
         transparent: true, depthWrite: false,
       })
     );
@@ -876,7 +967,7 @@
         boxRoot.add(m.group);
       }
       const isSel = sel.has(b.id);
-      const warn = b.overhang || b.unstable || b.tooTall || b.onNoStack != null;
+      const warn = b.overhang || b.unstable || b.tooTall || b.outside || b.onNoStack != null;
       m.edges.material.color.set(isSel ? 0xffffff : warn ? 0xff9f1c : 0x05070f);
       m.mat.emissive.set(isSel ? 0x1c1c1c : warn ? 0x401800 : 0x000000);
       m.mat.transparent = !b.placed;
@@ -914,7 +1005,7 @@
     origin.z = (B.z0 + B.z1) / 2;
     rebuildPallets();
     syncMeshes();
-    const W = B.x1 - B.x0, D = B.z1 - B.z0, H = state.maxH;
+    const W = B.x1 - B.x0, D = B.z1 - B.z0, H = heightLimit();
     perspCtl.enabled = v === '3d';
     orthoCtl.enabled = v !== '3d';
     scene.fog = v === '3d' ? fog : null;
@@ -1005,7 +1096,8 @@
     if (b.overhang) return `${b.name} overhangs its pallet.`;
     if (b.unstable) return `${b.name} is not supported under its centre — it would tip.`;
     if (b.onNoStack != null) return `${b.name} is on top of #${b.onNoStack}${state.allowStack ? ', which is marked not stackable' : ' but stacking is turned off'}.`;
-    if (b.y + b.h > state.maxH + EPS) return `${b.name} exceeds the max load height.`;
+    if (b.outside) return `${b.name} is outside the ${fmt(state.fit.w)} × ${fmt(state.fit.d)} space.`;
+    if (b.tooTall) return `${b.name} goes above the ${fmt(heightLimit())} cm height limit.`;
     return null;
   }
 
@@ -1154,14 +1246,19 @@
   // --- auto placement
   // Placements auto-place may try for a piece: quarter turns in plan, keeping
   // its current tip (a cabinet the user laid on its back stays on its back).
+  // A box or cabinet too tall to stand under the height limit is also tried
+  // lying on its back.
   function orientations(b) {
     const o = origDims(b);
     const rots = b.shape === 'cyl' ? [0] : b.shape === 'box' && !b.tip && o[0] === o[2] ? [0] : b.shape === 'box' ? [0, 1] : [0, 1, 2, 3];
-    return rots.map((rot) => {
-      const c = { shape: b.shape, tip: b.tip, rot, arm: b.arm, board: b.board, lid: b.lid, w: 0, h: 0, d: 0 };
+    const make = (tip) => rots.map((rot) => {
+      const c = { shape: b.shape, tip, rot, arm: b.arm, board: b.board, lid: b.lid, stackable: b.stackable, w: 0, h: 0, d: 0 };
       applyDims(c, o[0], o[1], o[2]);
       return c;
     });
+    const list = make(b.tip);
+    if ((b.shape === 'box' || b.shape === 'cab') && list.every((c) => c.h > heightLimit() + EPS)) list.push(...make(b.tip ^ 1));
+    return list;
   }
 
   function better(a, b) {
@@ -1175,9 +1272,9 @@
   // back, then furthest left; fully on one pallet, balanced, broadly supported
   // and under the height limit. Candidate positions line up with every board
   // edge, so units are tried inside open cabinets too. Returns null if none.
-  function findSpot(b, others) {
+  function findSpot(b, others, areas = packAreas()) {
     let best = null;
-    state.pallets.forEach((P, pi) => {
+    areas.forEach((P, pi) => {
       for (const c of orientations(b)) {
         const { w, d } = c;
         if (w > P.w + EPS || d > P.d + EPS) continue;
@@ -1195,7 +1292,7 @@
           for (const z of zl) {
             const t = { ...c, x, z, y: 0, pi };
             t.y = landingY(t, others);
-            if (t.y + t.h > state.maxH + EPS) continue;
+            if (t.y + t.h > heightLimit() + EPS) continue;
             if (best && !better(t, best)) continue;
             const k = contact(t, others);
             if (!k.stable || k.spread < 0.7 || k.onNoStack) continue;
@@ -1242,7 +1339,7 @@
           t.area = W * D;
           if (best && t.area > best.area + 1) continue;
           t.y = landingY(t, others);
-          if (t.y + t.h > state.maxH + EPS) continue;
+          if (t.y + t.h > heightLimit() + EPS) continue;
           if (best && !betterFree(t, best)) continue;
           if (others.length) {
             const k = contact(t, others);
@@ -1277,7 +1374,7 @@
         const c = makeBox(cleanBox(b), b.id);
         const spot = findSpotFree(c, done, limit);
         if (!spot) { ok = false; break; }
-        Object.assign(c, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, y: spot.y, placed: true });
+        Object.assign(c, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, tip: spot.tip, y: spot.y, placed: true });
         done.push(c);
       }
       if (!ok) continue;
@@ -1298,20 +1395,20 @@
     for (const c of result.boxes) {
       const b = getBox(c.id);
       const from = displayY(b);
-      Object.assign(b, { x: round1(c.x + dx), z: round1(c.z + dz), w: c.w, h: c.h, d: c.d, rot: c.rot, y: c.y, placed: true });
+      Object.assign(b, { x: round1(c.x + dx), z: round1(c.z + dz), w: c.w, h: c.h, d: c.d, rot: c.rot, tip: c.tip, y: c.y, placed: true });
       anim.set(b.id, { from, start: performance.now() });
     }
   }
 
   const sizeText = (r) => `${fmt(r.w)} W × ${fmt(r.d)} D × ${fmt(r.h)} H cm`;
-  const tooTallFor = (list) => list.find((b) => Math.min(...orientations(b).map((c) => c.h)) > state.maxH + EPS);
+  const tooTallFor = (list) => list.find((b) => Math.min(...orientations(b).map((c) => c.h)) > heightLimit() + EPS);
 
   function autoPlace(b) {
     const others = placedBoxes().filter((o) => o !== b);
-    const spot = state.noPallet ? findSpotFree(b, others, 0) : findSpot(b, others);
+    const spot = state.noPallet && !fitOn() ? findSpotFree(b, others, 0) : findSpot(b, others);
     if (!spot) return false;
     const from = displayY(b);
-    Object.assign(b, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, y: spot.y, placed: true });
+    Object.assign(b, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, tip: spot.tip, y: spot.y, placed: true });
     anim.set(b.id, { from, start: performance.now() });
     return true;
   }
@@ -1321,7 +1418,7 @@
   function autoPlaceSelected() {
     const list = selectedBoxes();
     if (!list.length) return;
-    if (state.noPallet && list.length > 1) return packSelectionFree(list);
+    if (state.noPallet && !fitOn() && list.length > 1) return packSelectionFree(list);
     pushUndo();
     liftGroup(list);
     let failed = 0;
@@ -1337,7 +1434,7 @@
   // right of everything else, and report the space they need.
   function packSelectionFree(list) {
     const tall = tooTallFor(list);
-    if (tall) return setStatus(`${tall.name} is taller than the ${fmt(state.maxH)} cm max load height in every orientation.`, true);
+    if (tall) return setStatus(`${tall.name} is taller than the ${fmt(heightLimit())} cm height limit in every orientation.`, true);
     const r = packFree(list);
     if (!r) return setStatus('Could not pack those pieces under the max load height.', true);
     pushUndo();
@@ -1353,11 +1450,33 @@
     setStatus(`Packed ${list.length} pieces into ${sizeText(r)}.`);
   }
 
+  // Fill the fixed space: largest first, lowest spot first (floor, then
+  // stacked or nested). Pieces that don't fit are set beside it.
+  function packIntoSpace() {
+    pushUndo();
+    const F = state.fit;
+    const order = packOrder(state.boxes);
+    for (const b of order) { b.placed = false; b.y = 0; }
+    const left = [];
+    for (const b of order) if (!autoPlace(b)) left.push(b);
+    let x = F.w + 30;
+    for (const b of left) { b.x = x; b.z = 0; b.placed = true; x += b.w + 10; }
+    settle();
+    setView(view, true);
+    const st = analyse();
+    refresh();
+    const inSpace = order.length - left.length;
+    setStatus(left.length
+      ? `${inSpace} of ${order.length} pieces fit in the ${fmt(F.w)} × ${fmt(F.d)} × ${fmt(F.h)} space; ${left.length === 1 ? `${left[0].name} did not and is` : `${left.length} did not and are`} set beside it.`
+      : `All ${order.length} pieces fit in the ${fmt(F.w)} × ${fmt(F.d)} × ${fmt(F.h)} space (${pct(st.fill)} of it filled).`, left.length > 0);
+  }
+
   function autoPackAll() {
     if (!state.boxes.length) return setStatus('Nothing to pack.');
+    if (fitOn()) return packIntoSpace();
     if (state.noPallet) {
       const tall = tooTallFor(state.boxes);
-      if (tall) return setStatus(`${tall.name} is taller than the ${fmt(state.maxH)} cm max load height in every orientation.`, true);
+      if (tall) return setStatus(`${tall.name} is taller than the ${fmt(heightLimit())} cm height limit in every orientation.`, true);
       const r = packFree(state.boxes);
       if (!r) return setStatus('Could not pack the pieces under the max load height.', true);
       pushUndo();
@@ -1643,6 +1762,13 @@
     $('noPalletBox').hidden = !state.noPallet;
     $('loadSize').textContent = st.size ? `${fmt(st.size.w)} × ${fmt(st.size.d)} × ${fmt(st.size.h)} cm` : 'nothing placed';
     if (document.activeElement !== $('pMax')) $('pMax').value = state.maxH;
+    $('fitOn').checked = state.fit.on;
+    $('fitBox').hidden = !state.fit.on;
+    $('pMaxWrap').hidden = fitOn();
+    for (const k of ['w', 'd', 'h']) {
+      const el = $(`fit${k.toUpperCase()}`);
+      if (document.activeElement !== el) el.value = state.fit[k];
+    }
     const ul = $('palletList');
     ul.innerHTML = '';
     state.pallets.forEach((P, i) => {
@@ -1701,7 +1827,8 @@
       if (b.overhang) warns.push('⚠ Overhangs its pallet');
       if (b.unstable) warns.push(`⚠ Nothing under its centre (${Math.round(b.support * 100)}% contact) — it would tip`);
       if (b.onNoStack != null) warns.push(`⚠ On top of #${b.onNoStack}${state.allowStack ? ', which is not stackable' : ' — stacking is turned off'}`);
-      if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(state.maxH)} cm limit`);
+      if (b.outside) warns.push('⚠ Outside the set space');
+      if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(heightLimit())} cm limit`);
     } else {
       warns.push('Hovering — press Space / DROP to place');
     }
@@ -1730,6 +1857,7 @@
       if (b.unstable) flags.push('unstable');
       if (b.onNoStack != null) flags.push(state.allowStack ? 'on no-stack' : 'stacked');
       if (b.tooTall) flags.push('tall');
+      if (b.outside) flags.push('outside');
       li.innerHTML = '<span class="sw"></span><span class="nm"></span><span class="dm"></span>';
       li.children[0].style.background = b.color;
       if (b.shape === 'cyl') li.children[0].style.borderRadius = '50%';
@@ -1757,8 +1885,8 @@
     $('sPallets').textContent = state.noPallet ? 'none' : state.pallets.length;
     $('sSize').textContent = st.size ? `${fmt(st.size.w)}×${fmt(st.size.d)}×${fmt(st.size.h)}` : '–';
     $('sUnits').textContent = st.units;
-    $('sHeight').textContent = `${fmt(st.top)} / ${fmt(state.maxH)} cm`;
-    $('sHeight').classList.toggle('bad', st.top > state.maxH + EPS);
+    $('sHeight').textContent = `${fmt(st.top)} / ${fmt(heightLimit())} cm`;
+    $('sHeight').classList.toggle('bad', st.top > heightLimit() + EPS);
     $('sVol').textContent = `${(st.vol / 1e6).toFixed(3)} m³`;
     $('sFloor').textContent = pct(st.floor);
     $('sDensity').textContent = st.density == null ? '–' : pct(st.density);
@@ -1841,6 +1969,33 @@
     });
     $('usePallets').addEventListener('change', (e) => setNoPallet(!e.target.checked));
     $('btnFitPallet').addEventListener('click', fitPalletToLoad);
+    const setFit = (patch, msg) => {
+      pushUndo();
+      Object.assign(state.fit, patch);
+      settle();
+      setView(view, true);
+      refresh();
+      if (msg) setStatus(msg);
+    };
+    $('fitOn').addEventListener('change', (e) => setFit({ on: e.target.checked }, e.target.checked
+      ? `Packing into a ${fmt(state.fit.w)} × ${fmt(state.fit.d)} × ${fmt(state.fit.h)} cm space. Press AUTO-PACK ALL to fill it.`
+      : 'Set space off: AUTO-PACK ALL packs into the smallest footprint again.'));
+    for (const k of ['w', 'd', 'h']) {
+      $(`fit${k.toUpperCase()}`).addEventListener('change', (e) => {
+        const v = num(e.target.value, state.fit[k]);
+        if (v !== state.fit[k]) setFit({ [k]: v });
+        e.target.value = state.fit[k];
+      });
+    }
+    const fp = $('fitPresets');
+    for (const sp of SPACE_PRESETS) {
+      const btn = document.createElement('button');
+      btn.textContent = sp.name;
+      btn.title = `${sp.w} × ${sp.d} × ${sp.h} cm (approximate)`;
+      btn.addEventListener('click', () => setFit({ w: sp.w, d: sp.d, h: sp.h, on: true },
+        `Space set to ${sp.w} × ${sp.d} × ${sp.h} cm (${sp.name.toLowerCase()}, approximate — edit to match yours).`));
+      fp.appendChild(btn);
+    }
     $('btnSameColour').addEventListener('click', selectSameColour);
     $('btnAddRight').addEventListener('click', () => addPallet('right'));
     $('btnAddBelow').addEventListener('click', () => addPallet('front'));
@@ -2207,5 +2362,17 @@
   requestAnimationFrame(tick);
 
   // exposed for debugging / tests
-  window.stacker = { state, spawn, autoPackAll, analyse, findSpot, settle, refresh, setSelection, setView, pasteBoxes, draft, get sel() { return sel; }, camera: () => activeCam(), origin, canvas: renderer.domElement };
+  window.stacker = { state, spawn, autoPackAll, analyse, findSpot, settle, refresh, setSelection, setView, pasteBoxes, draft, get sel() { return sel; }, camera: () => activeCam(), origin, canvas: renderer.domElement,
+    // pairs of pieces whose boards cut through each other (should always be empty)
+    collisions() {
+      const out = [], L = placedBoxes();
+      for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+        const a = L[i], b = L[j];
+        if (!bboxOverlap(a, b)) continue;
+        for (const p of parts(a)) for (const q of parts(b)) {
+          if (a.y + p.y0 < b.y + q.y1 - EPS && b.y + q.y0 < a.y + p.y1 - EPS && primIntersects(p, q)) { out.push([a.id, b.id]); }
+        }
+      }
+      return out;
+    } };
 })();
