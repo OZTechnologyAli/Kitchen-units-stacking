@@ -72,7 +72,7 @@
 
   // ---------------------------------------------------------------- state
   const state = {
-    pallets: [{ id: 1, x: 0, z: 0, w: 120, d: 80, t: 10 }],
+    pallets: [{ id: 1, x: 0, z: 0, w: 120, d: 80, t: 10, h: 200 }],   // h: load height limit
     maxH: 200,
     gap: 0,
     noPallet: false,  // size a load on the open floor, with no pallet
@@ -405,11 +405,14 @@
 
   const fitOn = () => state.noPallet && state.fit.on;
   // The fixed space as a pallet-like rectangle with its back-left corner at 0,0.
-  const fitRect = () => ({ id: 0, x: 0, z: 0, w: state.fit.w, d: state.fit.d });
+  const fitRect = () => ({ id: 0, x: 0, z: 0, w: state.fit.w, d: state.fit.d, h: state.fit.h });
   // Areas auto-pack fills: the pallets, or the fixed space.
   const packAreas = () => (fitOn() ? [fitRect()] : state.pallets);
-  // How high the load may go.
-  const heightLimit = () => (fitOn() ? state.fit.h : state.maxH);
+  // How high the load may go: the set space, the no-pallet limit, or the
+  // tallest pallet limit (each pallet has its own).
+  const heightLimit = () => (fitOn() ? state.fit.h : state.noPallet ? state.maxH : Math.max(...state.pallets.map((P) => P.h)));
+  // The limit that applies to one placed piece: its own pallet's, on pallets.
+  const limitFor = (b) => (!state.noPallet && b.palId != null ? getPallet(b.palId).h : heightLimit());
 
   // The area the scene is framed around: the pallets, or in no-pallet mode
   // the load itself (with a sensible minimum).
@@ -520,7 +523,7 @@
       b.support = c.support;
       b.unstable = !c.stable;
       b.onNoStack = c.onNoStack ? c.onNoStack.id : null;
-      b.tooTall = b.y + b.h > heightLimit() + EPS;
+      b.tooTall = b.y + b.h > limitFor(b) + EPS;
       // With a fixed space, every piece must sit within its floor area.
       b.outside = fitOn() && (b.x < -EPS || b.z < -EPS || b.x + b.w > state.fit.w + EPS || b.z + b.d > state.fit.d + EPS);
       if (b.overhang || b.unstable || b.tooTall || b.outside || b.onNoStack != null) issues++;
@@ -539,7 +542,7 @@
       : state.noPallet ? (L ? [{ id: 0, x: L.x0, z: L.z0, w: L.x1 - L.x0, d: L.z1 - L.z0 }] : [])
       : state.pallets;
     if (state.noPallet) per.set(0, { units: 0, vol: 0, covered: 0 });
-    let covered = 0, cells = 0, area = 0;
+    let covered = 0, cells = 0, area = 0, capacity = 0;
     vol = occupiedVolume(load);
     for (const P of floors) {
       const nx = Math.ceil(P.w), nz = Math.ceil(P.d);
@@ -558,13 +561,14 @@
       for (let i = 0; i < grid.length; i++) c += grid[i];
       per.get(P.id).covered = c / grid.length;
       covered += c; cells += grid.length; area += P.w * P.d;
+      capacity += P.w * P.d * (P.h || heightLimit());
     }
 
     return {
       units: load.length,
       vol,
       top,
-      fill: area ? vol / (area * heightLimit()) : 0,
+      fill: capacity ? vol / capacity : 0,
       floor: cells ? covered / cells : 0,
       density: top > 0 && area ? vol / (area * top) : null,
       size: L ? { w: L.x1 - L.x0, d: L.z1 - L.z0, h: L.y1 } : null,
@@ -590,14 +594,15 @@
     if (!data || !Array.isArray(data.boxes)) throw new Error('Not a Cupboard Stacker file');
     // v1 files had a single `pallet` with maxH on it.
     const rawPallets = Array.isArray(data.pallets) && data.pallets.length ? data.pallets : [data.pallet || {}];
+    state.maxH = num(data.maxH, num(data.pallet && data.pallet.maxH, 200));
     let pid = 0;
     state.pallets = rawPallets.map((p) => {
       const id = Number.isInteger(p.id) ? p.id : ++pid;
       pid = Math.max(pid, id);
-      return { id, x: +p.x || 0, z: +p.z || 0, w: num(p.w, 120), d: num(p.d, 80), t: num(p.t, 10) };
+      // older saves had one shared height limit (maxH)
+      return { id, x: +p.x || 0, z: +p.z || 0, w: num(p.w, 120), d: num(p.d, 80), t: num(p.t, 10), h: num(p.h, state.maxH) };
     });
     state.nextPalletId = Math.max(pid + 1, data.nextPalletId | 0);
-    state.maxH = num(data.maxH, num(data.pallet && data.pallet.maxH, 200));
     state.gap = Math.max(0, +data.gap || 0);
     state.noPallet = !!data.noPallet;
     state.allowStack = data.allowStack !== false;
@@ -770,10 +775,10 @@
 
       // Allowed load envelope
       const env = new THREE.LineSegments(
-        new THREE.EdgesGeometry(new THREE.BoxGeometry(P.w, state.maxH, P.d)),
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(P.w, P.h, P.d)),
         new THREE.LineDashedMaterial({ color: 0x3ff0ff, dashSize: 4, gapSize: 4, transparent: true, opacity: 0.45 })
       );
-      env.position.set(cx, state.maxH / 2, cz);
+      env.position.set(cx, P.h / 2, cz);
       env.computeLineDistances();
       palletGroup.add(env);
 
@@ -782,7 +787,7 @@
       const label = new THREE.Mesh(
         new THREE.PlaneGeometry(lw, lh),
         new THREE.MeshBasicMaterial({
-          map: textTexture([`P${i + 1}  ${fmt(P.w)}×${fmt(P.d)}`], lw, lh, isSel ? '#ffe23f' : '#ff6b6b'),
+          map: textTexture([`P${i + 1}  ${fmt(P.w)}×${fmt(P.d)}  H${fmt(P.h)}`], lw, lh, isSel ? '#ffe23f' : '#ff6b6b'),
           transparent: true, depthWrite: false,
         })
       );
@@ -1097,7 +1102,7 @@
     if (b.unstable) return `${b.name} is not supported under its centre — it would tip.`;
     if (b.onNoStack != null) return `${b.name} is on top of #${b.onNoStack}${state.allowStack ? ', which is marked not stackable' : ' but stacking is turned off'}.`;
     if (b.outside) return `${b.name} is outside the ${fmt(state.fit.w)} × ${fmt(state.fit.d)} space.`;
-    if (b.tooTall) return `${b.name} goes above the ${fmt(heightLimit())} cm height limit.`;
+    if (b.tooTall) return `${b.name} goes above the ${fmt(limitFor(b))} cm height limit.`;
     return null;
   }
 
@@ -1292,7 +1297,7 @@
           for (const z of zl) {
             const t = { ...c, x, z, y: 0, pi };
             t.y = landingY(t, others);
-            if (t.y + t.h > heightLimit() + EPS) continue;
+            if (t.y + t.h > (P.h || heightLimit()) + EPS) continue;
             if (best && !better(t, best)) continue;
             const k = contact(t, others);
             if (!k.stable || k.spread < 0.7 || k.onNoStack) continue;
@@ -1520,7 +1525,7 @@
     if (!L) return setStatus('Place some pieces first.');
     pushUndo();
     const t = selPallet().t;
-    const P = { id: state.nextPalletId++, x: L.x0, z: L.z0, w: Math.ceil(L.x1 - L.x0 - EPS), d: Math.ceil(L.z1 - L.z0 - EPS), t };
+    const P = { id: state.nextPalletId++, x: L.x0, z: L.z0, w: Math.ceil(L.x1 - L.x0 - EPS), d: Math.ceil(L.z1 - L.z0 - EPS), t, h: heightLimit() };
     state.pallets = [P];
     palletSelId = P.id;
     state.noPallet = false;
@@ -1543,7 +1548,7 @@
     pushUndo();
     const base = selPallet(), B = palletBounds(), gap = state.gap;
     const P = {
-      id: state.nextPalletId++, w: base.w, d: base.d, t: base.t,
+      id: state.nextPalletId++, w: base.w, d: base.d, t: base.t, h: base.h,
       x: dir === 'right' ? B.x1 + gap : base.x,
       z: dir === 'right' ? base.z : B.z1 + gap,
     };
@@ -1764,7 +1769,7 @@
     if (document.activeElement !== $('pMax')) $('pMax').value = state.maxH;
     $('fitOn').checked = state.fit.on;
     $('fitBox').hidden = !state.fit.on;
-    $('pMaxWrap').hidden = fitOn();
+    $('pMaxWrap').hidden = !state.noPallet || fitOn();   // pallets have their own limit
     for (const k of ['w', 'd', 'h']) {
       const el = $(`fit${k.toUpperCase()}`);
       if (document.activeElement !== el) el.value = state.fit[k];
@@ -1777,7 +1782,8 @@
       li.classList.toggle('sel', P.id === palletSelId);
       li.innerHTML = '<span class="pid"></span><span class="nm"></span><button class="x" title="Remove pallet">✕</button>';
       li.children[0].textContent = `P${i + 1}`;
-      li.children[1].textContent = `${fmt(P.w)} × ${fmt(P.d)} cm`;
+      li.children[1].textContent = `${fmt(P.w)} × ${fmt(P.d)} × ${fmt(P.h)} cm`;
+      li.title = `${fmt(P.w)} wide × ${fmt(P.d)} deep, load up to ${fmt(P.h)} cm high`;
       const sub = document.createElement('span');
       sub.className = 'sub';
       sub.textContent = `${s.units} unit${s.units === 1 ? '' : 's'} · ${pct(s.covered)} floor`;
@@ -1790,7 +1796,7 @@
     const P = selPallet();
     $('palTag').textContent = `P${state.pallets.indexOf(P) + 1}`;
     const setIfIdle = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v; };
-    setIfIdle('pW', P.w); setIfIdle('pD', P.d); setIfIdle('pT', P.t);
+    setIfIdle('pW', P.w); setIfIdle('pD', P.d); setIfIdle('pH', P.h); setIfIdle('pT', P.t);
     setIfIdle('pX', P.x); setIfIdle('pZ', P.z);
     setIfIdle('pMax', state.maxH); setIfIdle('pGap', state.gap);
   }
@@ -1828,7 +1834,7 @@
       if (b.unstable) warns.push(`⚠ Nothing under its centre (${Math.round(b.support * 100)}% contact) — it would tip`);
       if (b.onNoStack != null) warns.push(`⚠ On top of #${b.onNoStack}${state.allowStack ? ', which is not stackable' : ' — stacking is turned off'}`);
       if (b.outside) warns.push('⚠ Outside the set space');
-      if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(heightLimit())} cm limit`);
+      if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(limitFor(b))} cm limit`);
     } else {
       warns.push('Hovering — press Space / DROP to place');
     }
@@ -1954,7 +1960,7 @@
       });
       pp.appendChild(btn);
     }
-    [['pW', 'w'], ['pD', 'd'], ['pT', 't'], ['pX', 'x'], ['pZ', 'z']].forEach(([id, key]) => {
+    [['pW', 'w'], ['pD', 'd'], ['pH', 'h'], ['pT', 't'], ['pX', 'x'], ['pZ', 'z']].forEach(([id, key]) => {
       $(id).addEventListener('change', (e) => { updatePallet(key, e.target.value); e.target.value = selPallet()[key]; });
     });
     $('pMax').addEventListener('change', (e) => {
