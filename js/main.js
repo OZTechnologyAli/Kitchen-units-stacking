@@ -68,6 +68,7 @@
     maxH: 200,
     gap: 0,
     noPallet: false,  // size a load on the open floor, with no pallet
+    allowStack: true, // false: nothing may rest on top of another unit
     boxes: [],      // { id, name, shape, w, h, d, arm, rot, color, x, z, y, placed, hy }
     nextId: 1,
     nextPalletId: 2,
@@ -322,7 +323,7 @@
       if (a <= EPS) return;
       // Resting on a board that reaches the unit's top (rim or lid) is "on top";
       // resting on a lower board, like a cabinet's base, is "inside".
-      if (o && o.stackable === false && q.y1 >= o.h - EPS) onNoStack = o;
+      if (o && (o.stackable === false || !state.allowStack) && q.y1 >= o.h - EPS) onNoStack = o;
       area += a;
       x0 = Math.min(x0, Math.max(p.x0, q.x0)); x1 = Math.max(x1, Math.min(p.x1, q.x1));
       z0 = Math.min(z0, Math.max(p.z0, q.z0)); z1 = Math.max(z1, Math.min(p.z1, q.z1));
@@ -522,7 +523,7 @@
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
-    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet,
+    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet, allowStack: state.allowStack,
     boxes: state.boxes.map(cleanBox), nextId: state.nextId, nextPalletId: state.nextPalletId,
   });
 
@@ -541,6 +542,7 @@
     state.maxH = num(data.maxH, num(data.pallet && data.pallet.maxH, 200));
     state.gap = Math.max(0, +data.gap || 0);
     state.noPallet = !!data.noPallet;
+    state.allowStack = data.allowStack !== false;
     let maxId = 0;
     state.boxes = data.boxes.map((b) => {
       const id = Number.isInteger(b.id) ? b.id : ++maxId;
@@ -1002,7 +1004,7 @@
     if (b.aside) return null;
     if (b.overhang) return `${b.name} overhangs its pallet.`;
     if (b.unstable) return `${b.name} is not supported under its centre — it would tip.`;
-    if (b.onNoStack != null) return `${b.name} is on top of #${b.onNoStack}, which is marked not stackable.`;
+    if (b.onNoStack != null) return `${b.name} is on top of #${b.onNoStack}${state.allowStack ? ', which is marked not stackable' : ' but stacking is turned off'}.`;
     if (b.y + b.h > state.maxH + EPS) return `${b.name} exceeds the max load height.`;
     return null;
   }
@@ -1698,7 +1700,7 @@
     else if (b.placed) {
       if (b.overhang) warns.push('⚠ Overhangs its pallet');
       if (b.unstable) warns.push(`⚠ Nothing under its centre (${Math.round(b.support * 100)}% contact) — it would tip`);
-      if (b.onNoStack != null) warns.push(`⚠ On top of #${b.onNoStack}, which is not stackable`);
+      if (b.onNoStack != null) warns.push(`⚠ On top of #${b.onNoStack}${state.allowStack ? ', which is not stackable' : ' — stacking is turned off'}`);
       if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(state.maxH)} cm limit`);
     } else {
       warns.push('Hovering — press Space / DROP to place');
@@ -1726,7 +1728,7 @@
       if (b.aside) flags.push('set aside');
       if (b.overhang) flags.push('overhang');
       if (b.unstable) flags.push('unstable');
-      if (b.onNoStack != null) flags.push('on no-stack');
+      if (b.onNoStack != null) flags.push(state.allowStack ? 'on no-stack' : 'stacked');
       if (b.tooTall) flags.push('tall');
       li.innerHTML = '<span class="sw"></span><span class="nm"></span><span class="dm"></span>';
       li.children[0].style.background = b.color;
@@ -1749,6 +1751,9 @@
   }
 
   function renderStats(st) {
+    const sm = $('btnStackMode');
+    sm.textContent = state.allowStack ? 'STACKING: ON' : 'STACKING: OFF';
+    sm.classList.toggle('off', !state.allowStack);
     $('sPallets').textContent = state.noPallet ? 'none' : state.pallets.length;
     $('sSize').textContent = st.size ? `${fmt(st.size.w)}×${fmt(st.size.d)}×${fmt(st.size.h)}` : '–';
     $('sUnits').textContent = st.units;
@@ -1855,7 +1860,12 @@
     buildShapeSeg($('dShape'), (shape) => { draft.shape = shape; draft.arm = undefined; syncDraftInputs(); });
     $('dName').addEventListener('input', (e) => { draft.name = e.target.value || 'Box'; });
     $('dLid').addEventListener('change', (e) => { draft.lid = e.target.checked; drawPreview(); });
-    $('dStack').addEventListener('change', (e) => { draft.stackable = e.target.checked; });
+    $('dStack').addEventListener('change', (e) => {
+      draft.stackable = e.target.checked;
+      if (!draft.stackable && state.boxes.length) {
+        setStatus('Only pieces you add from now on will be non-stackable. To stop auto-pack stacking the pieces already placed, turn STACKING OFF next to AUTO-PACK ALL (or select pieces and untick Stackable in the Selected panel).', true);
+      }
+    });
     [['dW', 'w'], ['dH', 'h'], ['dD', 'd'], ['dArm', 'arm'], ['dBoard', 'board']].forEach(([id, key]) => {
       $(id).addEventListener('input', (e) => {
         draft[key] = num(e.target.value, draft[key]);
@@ -1943,6 +1953,14 @@
     document.querySelectorAll('[data-view]').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
     $('btnUndo').addEventListener('click', undo);
     $('btnAutoAll').addEventListener('click', autoPackAll);
+    $('btnStackMode').addEventListener('click', () => {
+      pushUndo();
+      state.allowStack = !state.allowStack;
+      refresh();
+      setStatus(state.allowStack
+        ? 'Stacking on: units may go on top of each other (except ones marked not stackable).'
+        : 'Stacking off: AUTO-PACK ALL lays every unit side by side in one layer. Units still go inside open cabinets.');
+    });
     // Two-step clear: the first click arms the button, a second click within 3 s clears.
     let clearArmed = null;
     $('btnClear').addEventListener('click', (e) => {
