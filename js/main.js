@@ -137,6 +137,7 @@
       x: round1(+raw.x || 0), z: round1(+raw.z || 0), y: +raw.y || 0,
       placed: raw.placed !== false,
       hy: +raw.hy || 0,
+      stackable: raw.stackable !== false,
     });
   }
 
@@ -315,9 +316,13 @@
   // contact patches, and whether its centre of weight sits over them.
   function contact(b, others) {
     let area = 0, x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    const add = (p, q) => {
+    let onNoStack = null;   // a do-not-stack unit whose top this piece rests on
+    const add = (p, q, o) => {
       const a = primOverlap(p, q);
       if (a <= EPS) return;
+      // Resting on a board that reaches the unit's top (rim or lid) is "on top";
+      // resting on a lower board, like a cabinet's base, is "inside".
+      if (o && o.stackable === false && q.y1 >= o.h - EPS) onNoStack = o;
       area += a;
       x0 = Math.min(x0, Math.max(p.x0, q.x0)); x1 = Math.max(x1, Math.min(p.x1, q.x1));
       z0 = Math.min(z0, Math.max(p.z0, q.z0)); z1 = Math.max(z1, Math.min(p.z1, q.z1));
@@ -331,7 +336,7 @@
       }
       for (const o of others) {
         if (o === b || !bboxOverlap(b, o)) continue;
-        for (const q of parts(o)) if (Math.abs(o.y + q.y1 - bottom) < EPS) add(p, q);
+        for (const q of parts(o)) if (Math.abs(o.y + q.y1 - bottom) < EPS) add(p, q, o);
       }
     }
     // Centre of weight: area-weighted centre of the plan outline.
@@ -346,7 +351,7 @@
     }
     const stable = area > EPS && cx >= x0 - 0.5 && cx <= x1 + 0.5 && cz >= z0 - 0.5 && cz <= z1 + 0.5;
     const spread = area > EPS ? Math.min((x1 - x0) / b.w, (z1 - z0) / b.d) : 0;
-    return { area, support: Math.min(1, area / planArea(b)), stable, spread };
+    return { area, support: Math.min(1, area / planArea(b)), stable, spread, onNoStack };
   }
 
   // Gravity. Placed pieces are processed bottom-up; each first climbs out of
@@ -427,6 +432,7 @@
     const all = placedBoxes();
     for (const b of state.boxes) {
       b.overhang = b.unstable = b.tooTall = b.aside = false;
+      b.onNoStack = null;
       b.palId = null;
       b.inside = null;
     }
@@ -457,8 +463,9 @@
       const c = contact(b, all);
       b.support = c.support;
       b.unstable = !c.stable;
+      b.onNoStack = c.onNoStack ? c.onNoStack.id : null;
       b.tooTall = b.y + b.h > state.maxH + EPS;
-      if (b.overhang || b.unstable || b.tooTall) issues++;
+      if (b.overhang || b.unstable || b.tooTall || b.onNoStack != null) issues++;
       if (b.inside != null) { nested++; top = Math.max(top, b.y + b.h); continue; }
       const v = envelopeVolume(b);
       vol += v;
@@ -511,7 +518,7 @@
   // ---------------------------------------------------------------- persistence + undo
   const cleanBox = (b) => ({
     id: b.id, name: b.name, shape: b.shape, w: b.w, h: b.h, d: b.d, arm: b.arm, rot: b.rot, tip: b.tip,
-    board: b.board, lid: b.lid,
+    board: b.board, lid: b.lid, stackable: b.stackable,
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
@@ -836,7 +843,7 @@
     const ink = luminance(b.color) > 0.55 ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)';
     const label = new THREE.Mesh(
       new THREE.PlaneGeometry(lw, ld),
-      new THREE.MeshBasicMaterial({ map: textTexture([b.name, dimsText(b)], lw, ld, ink), transparent: true, depthWrite: false })
+      new THREE.MeshBasicMaterial({ map: textTexture([b.name, `${dimsText(b)}${b.stackable === false ? ' NO STACK' : ''}`], lw, ld, ink), transparent: true, depthWrite: false })
     );
     label.rotation.x = -Math.PI / 2;
     label.position.set(lx, ly + 0.1, lz);
@@ -857,7 +864,7 @@
       if (!ids.has(id)) { boxRoot.remove(m.group); disposeTree(m.group); meshes.delete(id); }
     }
     for (const b of state.boxes) {
-      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.color}|${b.name}`;
+      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.stackable}|${b.color}|${b.name}`;
       let m = meshes.get(b.id);
       if (!m || m.key !== key) {
         if (m) { boxRoot.remove(m.group); disposeTree(m.group); }
@@ -867,7 +874,7 @@
         boxRoot.add(m.group);
       }
       const isSel = sel.has(b.id);
-      const warn = b.overhang || b.unstable || b.tooTall;
+      const warn = b.overhang || b.unstable || b.tooTall || b.onNoStack != null;
       m.edges.material.color.set(isSel ? 0xffffff : warn ? 0xff9f1c : 0x05070f);
       m.mat.emissive.set(isSel ? 0x1c1c1c : warn ? 0x401800 : 0x000000);
       m.mat.transparent = !b.placed;
@@ -995,6 +1002,7 @@
     if (b.aside) return null;
     if (b.overhang) return `${b.name} overhangs its pallet.`;
     if (b.unstable) return `${b.name} is not supported under its centre — it would tip.`;
+    if (b.onNoStack != null) return `${b.name} is on top of #${b.onNoStack}, which is marked not stackable.`;
     if (b.y + b.h > state.maxH + EPS) return `${b.name} exceeds the max load height.`;
     return null;
   }
@@ -1188,7 +1196,7 @@
             if (t.y + t.h > state.maxH + EPS) continue;
             if (best && !better(t, best)) continue;
             const k = contact(t, others);
-            if (!k.stable || k.spread < 0.7) continue;
+            if (!k.stable || k.spread < 0.7 || k.onNoStack) continue;
             best = t;
           }
         }
@@ -1236,7 +1244,7 @@
           if (best && !betterFree(t, best)) continue;
           if (others.length) {
             const k = contact(t, others);
-            if (!k.stable || k.spread < 0.7) continue;
+            if (!k.stable || k.spread < 0.7 || k.onNoStack) continue;
           }
           best = t;
         }
@@ -1619,6 +1627,7 @@
     $('dArm').value = draft.arm || '';
     $('dBoard').value = draft.board || '';
     $('dLid').checked = !!draft.lid;
+    $('dStack').checked = draft.stackable !== false;
     $('dColor').value = draft.color;
     markSwatch($('dSwatches'), draft.color);
     markShape($('dShape'), draft.shape);
@@ -1673,6 +1682,7 @@
     setIfIdle('sW', W0); setIfIdle('sH', H0); setIfIdle('sD', D0); setIfIdle('sArm', b.arm || '');
     setIfIdle('sBoard', b.board || '');
     $('sLid').checked = !!b.lid;
+    $('sStack').checked = b.stackable !== false;
     setIfIdle('sX', b.x); setIfIdle('sZ', b.z);
     $('sY').value = round1(b.y);
     setIfIdle('sColor', b.color);
@@ -1688,6 +1698,7 @@
     else if (b.placed) {
       if (b.overhang) warns.push('⚠ Overhangs its pallet');
       if (b.unstable) warns.push(`⚠ Nothing under its centre (${Math.round(b.support * 100)}% contact) — it would tip`);
+      if (b.onNoStack != null) warns.push(`⚠ On top of #${b.onNoStack}, which is not stackable`);
       if (b.tooTall) warns.push(`⚠ Top at ${fmt(b.y + b.h)} cm exceeds ${fmt(state.maxH)} cm limit`);
     } else {
       warns.push('Hovering — press Space / DROP to place');
@@ -1715,6 +1726,7 @@
       if (b.aside) flags.push('set aside');
       if (b.overhang) flags.push('overhang');
       if (b.unstable) flags.push('unstable');
+      if (b.onNoStack != null) flags.push('on no-stack');
       if (b.tooTall) flags.push('tall');
       li.innerHTML = '<span class="sw"></span><span class="nm"></span><span class="dm"></span>';
       li.children[0].style.background = b.color;
@@ -1726,7 +1738,7 @@
         f.textContent = `⚠ ${flags.join(', ')}`;
         li.children[1].appendChild(f);
       }
-      li.children[2].textContent = `${dimsText(b)}${b.inside != null ? ` · in #${b.inside}` : ''}${b.palId && state.pallets.length > 1 ? ` · P${palIndex.get(b.palId)}` : ''}`;
+      li.children[2].textContent = `${dimsText(b)}${b.stackable === false ? ' · no stack' : ''}${b.inside != null ? ` · in #${b.inside}` : ''}${b.palId && state.pallets.length > 1 ? ` · P${palIndex.get(b.palId)}` : ''}`;
       li.addEventListener('click', (e) => {
         if (e.ctrlKey || e.metaKey) toggleSelected(b.id);
         else setSelection([b.id], b.id);
@@ -1793,6 +1805,8 @@
   }
 
   function wireUI() {
+    // Hand the keyboard back to the game after ticking a box.
+    document.addEventListener('change', (e) => { if (e.target.type === 'checkbox') e.target.blur(); });
     // pallets
     const pp = $('palletPresets');
     for (const p of PALLET_PRESETS) {
@@ -1841,6 +1855,7 @@
     buildShapeSeg($('dShape'), (shape) => { draft.shape = shape; draft.arm = undefined; syncDraftInputs(); });
     $('dName').addEventListener('input', (e) => { draft.name = e.target.value || 'Box'; });
     $('dLid').addEventListener('change', (e) => { draft.lid = e.target.checked; drawPreview(); });
+    $('dStack').addEventListener('change', (e) => { draft.stackable = e.target.checked; });
     [['dW', 'w'], ['dH', 'h'], ['dD', 'd'], ['dArm', 'arm'], ['dBoard', 'board']].forEach(([id, key]) => {
       $(id).addEventListener('input', (e) => {
         draft[key] = num(e.target.value, draft[key]);
@@ -1863,6 +1878,13 @@
       if (shape === 'cyl') b.d = b.w;
     }));
     $('sLid').addEventListener('change', (e) => editSelected((b) => { if (b.shape === 'cab') b.lid = e.target.checked; }));
+    $('sStack').addEventListener('change', (e) => {
+      const on = e.target.checked;
+      editSelected((b) => { b.stackable = on; });
+      const n = sel.size;
+      setStatus(on ? `${n > 1 ? `${n} pieces` : 'Piece'} can carry units on top.`
+        : `${n > 1 ? `${n} pieces` : 'Piece'} marked not stackable — nothing should go on top (nesting inside is still allowed).`);
+    });
     buildSwatches($('sSwatches'), (c) => editSelected((b) => { b.color = c; }));
     let colorEditing = false;
     $('sColor').addEventListener('input', (e) => {
@@ -1974,7 +1996,9 @@
     moveSelected(v[0] * s, v[1] * s);
   }
 
-  const isTyping = (t) => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+  // Text-like fields keep their keys; checkboxes and colour pickers don't.
+  const isTyping = (t) => t && (t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
+    (t.tagName === 'INPUT' && !['checkbox', 'color', 'button', 'file'].includes(t.type)));
 
   function wireKeys() {
     let pasteFallback = null;

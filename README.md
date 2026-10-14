@@ -15,8 +15,9 @@ A small 3D browser game for working out how to stack kitchen cupboards on a pall
   - **Slide it in:** a unit pushed with the arrow keys against a cabinet's open front steps up onto the base board and slides inside, provided it fits under the lid.
   - **Lay it on its back:** **T** lays a cabinet on its back so the open side faces up, ready to be filled.
 - **Other shapes:** **solid box**, **cylinder** (set by diameter) and **L-corner** (an L-shaped corner unit with a set arm depth). Presets cover base, wall, tall and drawer cabinets (base units default to no lid; wall and tall units have one), plus a carton, an L-corner, a drum and a tube.
+- **Stackable or not:** every unit has a **Stackable** checkbox, ticked by default. Untick it for units that mustn't carry a load; their label then reads NO STACK. Anything placed on top of one turns orange and counts as an issue, and auto-place / auto-pack never stack onto it. Putting a unit *inside* a non-stackable open cabinet (on its base board) is still allowed. Select several units first to change them all at once.
 - **Gameplay works like Tetris.** A new piece hovers over the pallet, with a ghost outline showing where it will land. Move it around and press **Space** to drop it. It falls until one of its boards meets one below, so it can stack on top of another unit or land inside an open one.
-- **Checks:** a piece turns orange if it hangs over the pallet edge, if nothing is underneath its centre (so it would tip), or if it goes above the maximum load height. A cabinet resting on the edges of an open one below counts as supported.
+- **Checks:** a piece turns orange if it hangs over the pallet edge, if nothing is underneath its centre (so it would tip), if it sits on top of a non-stackable unit, or if it goes above the maximum load height. A cabinet resting on the edges of an open one below counts as supported.
 - **The score panel** shows:
   - how much of the allowed volume is filled
   - the stack height
