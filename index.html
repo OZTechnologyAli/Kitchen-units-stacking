@@ -16,6 +16,14 @@
 
       <section class="card">
         <h2>PALLETS</h2>
+        <label class="check"><input type="checkbox" id="usePallets"> Use pallets</label>
+        <div id="noPalletBox">
+          <p class="muted note">No pallet: pieces stand on the floor. <b>AUTO-PACK ALL</b> packs them tightly; the dashed box shows the space they need.</p>
+          <div class="caption">Load size</div>
+          <div class="load-size" id="loadSize">–</div>
+          <button id="btnFitPallet" class="primary wide">MAKE PALLET THIS SIZE</button>
+        </div>
+        <div id="palletEdit">
         <ul id="palletList" class="pieces pallets"></ul>
         <div class="row-btns">
           <button id="btnAddRight" title="Add a pallet to the right of the others">+ PALLET →</button>
@@ -28,11 +36,12 @@
         <div class="grid2">
           <label>Width (cm)<input type="number" id="pW" min="20" max="400" step="1"></label>
           <label>Depth (cm)<input type="number" id="pD" min="20" max="400" step="1"></label>
-          <label>Thickness (cm)<input type="number" id="pT" min="1" max="50" step="0.5"></label>
-          <label>Max load ht (cm)<input type="number" id="pMax" min="20" max="400" step="1" title="Applies to every pallet"></label>
           <label>X (cm)<input type="number" id="pX" step="1"></label>
           <label>Z (cm)<input type="number" id="pZ" step="1"></label>
+          <label>Thickness (cm)<input type="number" id="pT" min="1" max="50" step="0.5"></label>
         </div>
+        </div>
+        <label>Max load height (cm)<input type="number" id="pMax" min="20" max="400" step="1" title="Applies to every pallet, and to the stack when there is no pallet"></label>
       </section>
 
       <section class="card">
@@ -47,6 +56,7 @@
         <dl class="stats">
           <dt>Pallets</dt><dd id="sPallets">1</dd>
           <dt>Units</dt><dd id="sUnits">0</dd>
+          <dt>Load size (W×D×H)</dt><dd id="sSize">–</dd>
           <dt>Stack height</dt><dd id="sHeight">0 cm</dd>
           <dt>Load volume</dt><dd id="sVol">0 m³</dd>
           <dt>Floor covered</dt><dd id="sFloor">0%</dd>
@@ -171,6 +181,7 @@
               <option value="10">10 cm</option>
             </select>
           </label>
+          <button id="btnSameColour" class="wide" title="Select every piece with this colour">SELECT ALL THIS COLOUR</button>
           <div id="selWarn" class="warn"></div>
         </div>
       </section>

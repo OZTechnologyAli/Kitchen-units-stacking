@@ -67,6 +67,7 @@
     pallets: [{ id: 1, x: 0, z: 0, w: 120, d: 80, t: 10 }],
     maxH: 200,
     gap: 0,
+    noPallet: false,  // size a load on the open floor, with no pallet
     boxes: [],      // { id, name, shape, w, h, d, arm, rot, color, x, z, y, placed, hy }
     nextId: 1,
     nextPalletId: 2,
@@ -324,7 +325,8 @@
     for (const p of parts(b)) {
       const bottom = b.y + p.y0;
       if (bottom < EPS) {
-        for (const P of state.pallets) add(p, palletPrim(P));
+        if (state.noPallet) add(p, p);   // the floor holds the whole board
+        else for (const P of state.pallets) add(p, palletPrim(P));
         continue;
       }
       for (const o of others) {
@@ -378,7 +380,22 @@
   // Height a piece would land at if dropped from above onto `others`.
   const landingY = (b, others) => fallY(b, others, Infinity);
 
+  // Bounds of the placed load, or null when nothing is placed.
+  function loadBounds() {
+    const list = placedBoxes();
+    if (!list.length) return null;
+    return { ...groupBounds(list), y1: Math.max(...list.map((b) => b.y + b.h)) };
+  }
+
+  // The area the scene is framed around: the pallets, or in no-pallet mode
+  // the load itself (with a sensible minimum).
   function palletBounds() {
+    if (state.noPallet) {
+      const L = loadBounds() || { x0: 0, x1: 120, z0: 0, z1: 80 };
+      const cx = (L.x0 + L.x1) / 2, cz = (L.z0 + L.z1) / 2;
+      const w = Math.max(120, L.x1 - L.x0), d = Math.max(80, L.z1 - L.z0);
+      return { x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 };
+    }
     const P = state.pallets;
     return {
       x0: Math.min(...P.map((p) => p.x)), x1: Math.max(...P.map((p) => p.x + p.w)),
@@ -395,7 +412,7 @@
 
   // Limit a proposed (dx, dz) shift of a group so it stays near the pallets.
   function clampDelta(list, dx, dz) {
-    const B = palletBounds(), G = groupBounds(list);
+    const B = state.noPallet ? { x0: -1000, x1: 1000, z0: -1000, z1: 1000 } : palletBounds(), G = groupBounds(list);
     const lo = (v, min) => Math.max(v, min), hi = (v, max) => Math.min(v, max);
     dx = hi(lo(dx, B.x0 - MARGIN - G.x0), B.x1 + MARGIN - G.x1);
     dz = hi(lo(dz, B.z0 - MARGIN - G.z0), B.z1 + MARGIN - G.z1);
@@ -415,6 +432,7 @@
     }
     const per = new Map(state.pallets.map((P) => [P.id, { units: 0, vol: 0, covered: 0 }]));
     for (const b of all) {
+      if (state.noPallet) continue;
       let best = 0;
       for (const P of state.pallets) {
         const a = onPalletArea(b, P);
@@ -435,7 +453,7 @@
     }
     let vol = 0, top = 0, issues = 0, nested = 0;
     for (const b of load) {
-      b.overhang = onPalletArea(b, getPallet(b.palId)) < partsArea(b) - 0.5;
+      b.overhang = !state.noPallet && onPalletArea(b, getPallet(b.palId)) < partsArea(b) - 0.5;
       const c = contact(b, all);
       b.support = c.support;
       b.unstable = !c.stable;
@@ -446,12 +464,18 @@
       vol += v;
       top = Math.max(top, b.y + b.h);
       const s = per.get(b.palId);
-      s.units++; s.vol += v;
+      if (s) { s.units++; s.vol += v; }
     }
 
-    // Floor coverage: rasterise footprints at 1 cm over each pallet.
+    // Floor coverage: rasterise footprints at 1 cm over each pallet (or, with
+    // no pallet, over the load's own footprint rectangle).
+    const L = loadBounds();
+    const floors = state.noPallet
+      ? (L ? [{ id: 0, x: L.x0, z: L.z0, w: L.x1 - L.x0, d: L.z1 - L.z0 }] : [])
+      : state.pallets;
+    if (state.noPallet) per.set(0, { units: 0, vol: 0, covered: 0 });
     let covered = 0, cells = 0, area = 0;
-    for (const P of state.pallets) {
+    for (const P of floors) {
       const nx = Math.ceil(P.w), nz = Math.ceil(P.d);
       const grid = new Uint8Array(nx * nz);
       for (const b of load) {
@@ -474,9 +498,10 @@
       units: load.length,
       vol,
       top,
-      fill: vol / (area * state.maxH),
-      floor: covered / cells,
-      density: top > 0 ? vol / (area * top) : null,
+      fill: area ? vol / (area * state.maxH) : 0,
+      floor: cells ? covered / cells : 0,
+      density: top > 0 && area ? vol / (area * top) : null,
+      size: L ? { w: L.x1 - L.x0, d: L.z1 - L.z0, h: L.y1 } : null,
       issues,
       nested,
       per,
@@ -490,7 +515,7 @@
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
-    pallets: state.pallets, maxH: state.maxH, gap: state.gap,
+    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet,
     boxes: state.boxes.map(cleanBox), nextId: state.nextId, nextPalletId: state.nextPalletId,
   });
 
@@ -508,6 +533,7 @@
     state.nextPalletId = Math.max(pid + 1, data.nextPalletId | 0);
     state.maxH = num(data.maxH, num(data.pallet && data.pallet.maxH, 200));
     state.gap = Math.max(0, +data.gap || 0);
+    state.noPallet = !!data.noPallet;
     let maxId = 0;
     state.boxes = data.boxes.map((b) => {
       const id = Number.isInteger(b.id) ? b.id : ++maxId;
@@ -642,6 +668,7 @@
   function rebuildPallets() {
     disposeTree(palletGroup);
     palletGroup.clear();
+    if (state.noPallet) { buildLoadOutline(); return; }
     const maxT = Math.max(...state.pallets.map((p) => p.t));
     state.pallets.forEach((P, i) => {
       const isSel = P.id === palletSelId;
@@ -695,6 +722,34 @@
       palletGroup.add(label);
     });
     floorGrid.position.set(0, -maxT - 0.05, 0);
+  }
+
+  // No-pallet mode: the pieces stand on the floor, wrapped in a dashed box
+  // showing the space the load takes up, with its size written in front.
+  function buildLoadOutline() {
+    floorGrid.position.set(0, -0.05, 0);
+    const L = loadBounds();
+    if (!L) return;
+    const w = L.x1 - L.x0, d = L.z1 - L.z0, h = L.y1;
+    const cx = (L.x0 + L.x1) / 2 - origin.x, cz = (L.z0 + L.z1) / 2 - origin.z;
+    const box = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)),
+      new THREE.LineDashedMaterial({ color: 0x3ff0ff, dashSize: 4, gapSize: 3, transparent: true, opacity: 0.8 })
+    );
+    box.position.set(cx, h / 2, cz);
+    box.computeLineDistances();
+    palletGroup.add(box);
+    const lw = Math.max(60, Math.min(w, 140)), lh = 14;
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(lw, lh),
+      new THREE.MeshBasicMaterial({
+        map: textTexture([`${fmt(w)} × ${fmt(d)} × ${fmt(h)} cm`], lw, lh, '#3ff0ff'),
+        transparent: true, depthWrite: false,
+      })
+    );
+    label.rotation.x = -Math.PI / 2;
+    label.position.set(cx, 0.2, cz + d / 2 + lh / 2 + 4);
+    palletGroup.add(label);
   }
 
   // --- piece meshes
@@ -920,7 +975,7 @@
 
   function spawn(spec) {
     pushUndo();
-    const P = selPallet();
+    const P = state.noPallet ? (() => { const B = palletBounds(); return { x: B.x0, z: B.z0, w: B.x1 - B.x0, d: B.z1 - B.z0 }; })() : selPallet();
     const s = normalizeShape({ ...spec });
     const b = makeBox({
       ...s,
@@ -1142,9 +1197,108 @@
     return best;
   }
 
+  // --- packing without a pallet
+  function betterFree(a, b) {
+    if (Math.abs(a.area - b.area) > 1) return a.area < b.area;
+    if (Math.abs(a.y - b.y) > EPS) return a.y < b.y;
+    if (Math.abs(a.z - b.z) > EPS) return a.z < b.z;
+    return a.x < b.x - EPS;
+  }
+
+  // Free-floor spot for `b` next to / on top of / inside `others`: the one
+  // that grows the load's footprint least, then the lowest, back-most,
+  // left-most. `limitD` (if set) caps how deep the load may get.
+  function findSpotFree(b, others, limitD) {
+    const G = others.length ? groupBounds(others) : null;
+    const ox = G ? G.x0 : 0, oz = G ? G.z0 : 0;
+    let best = null;
+    for (const c of orientations(b)) {
+      const { w, d } = c;
+      if (limitD && d > limitD + EPS) continue;
+      const xs = new Set([ox]), zs = new Set([oz]);
+      for (const q of others) {
+        for (const r of parts(q)) {
+          xs.add(round1(r.x1)); xs.add(round1(r.x0 - w)); xs.add(round1(r.x0));
+          zs.add(round1(r.z1)); zs.add(round1(r.z0 - d)); zs.add(round1(r.z0));
+        }
+      }
+      const xl = [...xs].filter((x) => x >= ox - EPS);
+      const zl = [...zs].filter((z) => z >= oz - EPS && (!limitD || z + d <= oz + limitD + EPS));
+      for (const x of xl) {
+        for (const z of zl) {
+          const t = { ...c, x, z, y: 0 };
+          const W = G ? Math.max(G.x1, x + w) - Math.min(G.x0, x) : w;
+          const D = G ? Math.max(G.z1, z + d) - Math.min(G.z0, z) : d;
+          t.area = W * D;
+          if (best && t.area > best.area + 1) continue;
+          t.y = landingY(t, others);
+          if (t.y + t.h > state.maxH + EPS) continue;
+          if (best && !betterFree(t, best)) continue;
+          if (others.length) {
+            const k = contact(t, others);
+            if (!k.stable || k.spread < 0.7) continue;
+          }
+          best = t;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Pack `list` from scratch on an empty floor, trying several load depths,
+  // and keep the layout with the smallest footprint (then lowest, then
+  // squarest). Returns { boxes: [{id, x, z, y, w, h, d, rot}], w, d, h } or null.
+  function packFree(list) {
+    const order = packOrder(list);
+    const depths = new Set([0]);
+    let need = 0, maxD = 0;
+    for (const b of order) {
+      const ds = orientations(b).map((c) => c.d);
+      need = Math.max(need, Math.min(...ds));
+      for (const d of ds) { depths.add(d); maxD = Math.max(maxD, d); }
+    }
+    depths.add(maxD * 2); depths.add(maxD * 3);
+    const limits = [...depths].filter((d) => d === 0 || d >= need - EPS).sort((a, b) => a - b).slice(0, 12);
+    let best = null;
+    for (const limit of limits) {
+      const done = [];
+      let ok = true;
+      for (const b of order) {
+        const c = makeBox(cleanBox(b), b.id);
+        const spot = findSpotFree(c, done, limit);
+        if (!spot) { ok = false; break; }
+        Object.assign(c, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, y: spot.y, placed: true });
+        done.push(c);
+      }
+      if (!ok) continue;
+      const G = groupBounds(done);
+      const r = {
+        boxes: done, w: G.x1 - G.x0, d: G.z1 - G.z0, h: Math.max(...done.map((b) => b.y + b.h)),
+      };
+      r.area = r.w * r.d;
+      if (!best || r.area < best.area - 1 ||
+          (Math.abs(r.area - best.area) <= 1 && (r.h < best.h - EPS ||
+          (Math.abs(r.h - best.h) <= EPS && Math.abs(r.w - r.d) < Math.abs(best.w - best.d))))) best = r;
+    }
+    return best;
+  }
+
+  // Move real pieces to a packed layout, shifted by (dx, dz).
+  function applyPacked(result, dx, dz) {
+    for (const c of result.boxes) {
+      const b = getBox(c.id);
+      const from = displayY(b);
+      Object.assign(b, { x: round1(c.x + dx), z: round1(c.z + dz), w: c.w, h: c.h, d: c.d, rot: c.rot, y: c.y, placed: true });
+      anim.set(b.id, { from, start: performance.now() });
+    }
+  }
+
+  const sizeText = (r) => `${fmt(r.w)} W × ${fmt(r.d)} D × ${fmt(r.h)} H cm`;
+  const tooTallFor = (list) => list.find((b) => Math.min(...orientations(b).map((c) => c.h)) > state.maxH + EPS);
+
   function autoPlace(b) {
     const others = placedBoxes().filter((o) => o !== b);
-    const spot = findSpot(b, others);
+    const spot = state.noPallet ? findSpotFree(b, others, 0) : findSpot(b, others);
     if (!spot) return false;
     const from = displayY(b);
     Object.assign(b, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, y: spot.y, placed: true });
@@ -1157,6 +1311,7 @@
   function autoPlaceSelected() {
     const list = selectedBoxes();
     if (!list.length) return;
+    if (state.noPallet && list.length > 1) return packSelectionFree(list);
     pushUndo();
     liftGroup(list);
     let failed = 0;
@@ -1168,8 +1323,40 @@
     else setStatus(`Auto-placed ${list.length} pieces.`);
   }
 
+  // No pallet: pack the selected pieces as tightly as possible, set to the
+  // right of everything else, and report the space they need.
+  function packSelectionFree(list) {
+    const tall = tooTallFor(list);
+    if (tall) return setStatus(`${tall.name} is taller than the ${fmt(state.maxH)} cm max load height in every orientation.`, true);
+    const r = packFree(list);
+    if (!r) return setStatus('Could not pack those pieces under the max load height.', true);
+    pushUndo();
+    const ids = new Set(list.map((b) => b.id));
+    for (const b of list) b.placed = false;
+    settle();
+    const rest = placedBoxes().filter((b) => !ids.has(b.id));
+    const G = rest.length ? groupBounds(rest) : null;
+    applyPacked(r, G ? G.x1 + 30 : 0, G ? G.z0 : 0);
+    settle();
+    setView(view, true);
+    refresh();
+    setStatus(`Packed ${list.length} pieces into ${sizeText(r)}.`);
+  }
+
   function autoPackAll() {
     if (!state.boxes.length) return setStatus('Nothing to pack.');
+    if (state.noPallet) {
+      const tall = tooTallFor(state.boxes);
+      if (tall) return setStatus(`${tall.name} is taller than the ${fmt(state.maxH)} cm max load height in every orientation.`, true);
+      const r = packFree(state.boxes);
+      if (!r) return setStatus('Could not pack the pieces under the max load height.', true);
+      pushUndo();
+      applyPacked(r, 0, 0);
+      settle();
+      setView(view, true);
+      refresh();
+      return setStatus(`Packed all ${state.boxes.length} pieces into ${sizeText(r)}. Use MAKE PALLET THIS SIZE to get a matching pallet.`);
+    }
     pushUndo();
     const order = packOrder(state.boxes);
     for (const b of order) { b.placed = false; b.y = 0; }
@@ -1186,6 +1373,43 @@
   }
 
   // --- pallets
+  function setNoPallet(on) {
+    if (state.noPallet === on) return;
+    pushUndo();
+    state.noPallet = on;
+    settle();
+    setView(view, true);
+    refresh();
+    setStatus(on
+      ? 'No pallet: pieces stand on the floor. AUTO-PACK ALL packs them tightly and the dashed box shows the space they need.'
+      : 'Pallets back on.');
+  }
+
+  // Replace the pallets with one sized to the load's footprint.
+  function fitPalletToLoad() {
+    const L = loadBounds();
+    if (!L) return setStatus('Place some pieces first.');
+    pushUndo();
+    const t = selPallet().t;
+    const P = { id: state.nextPalletId++, x: L.x0, z: L.z0, w: Math.ceil(L.x1 - L.x0 - EPS), d: Math.ceil(L.z1 - L.z0 - EPS), t };
+    state.pallets = [P];
+    palletSelId = P.id;
+    state.noPallet = false;
+    settle();
+    setView(view, true);
+    refresh();
+    setStatus(`Pallet sized to ${P.w} × ${P.d} cm to fit the load.`);
+  }
+
+  function selectSameColour() {
+    const p = primary();
+    if (!p) return;
+    const ids = state.boxes.filter((b) => b.color === p.color).map((b) => b.id);
+    setSelection(ids, p.id);
+    refresh();
+    setStatus(`Selected ${ids.length} piece${ids.length > 1 ? 's' : ''} of this colour.${state.noPallet ? ' AUTO packs just these.' : ''}`);
+  }
+
   function addPallet(dir) {
     pushUndo();
     const base = selPallet(), B = palletBounds(), gap = state.gap;
@@ -1403,6 +1627,11 @@
   }
 
   function renderPallets(st) {
+    $('usePallets').checked = !state.noPallet;
+    $('palletEdit').hidden = state.noPallet;
+    $('noPalletBox').hidden = !state.noPallet;
+    $('loadSize').textContent = st.size ? `${fmt(st.size.w)} × ${fmt(st.size.d)} × ${fmt(st.size.h)} cm` : 'nothing placed';
+    if (document.activeElement !== $('pMax')) $('pMax').value = state.maxH;
     const ul = $('palletList');
     ul.innerHTML = '';
     state.pallets.forEach((P, i) => {
@@ -1508,7 +1737,8 @@
   }
 
   function renderStats(st) {
-    $('sPallets').textContent = state.pallets.length;
+    $('sPallets').textContent = state.noPallet ? 'none' : state.pallets.length;
+    $('sSize').textContent = st.size ? `${fmt(st.size.w)}×${fmt(st.size.d)}×${fmt(st.size.h)}` : '–';
     $('sUnits').textContent = st.units;
     $('sHeight').textContent = `${fmt(st.top)} / ${fmt(state.maxH)} cm`;
     $('sHeight').classList.toggle('bad', st.top > state.maxH + EPS);
@@ -1528,7 +1758,7 @@
     const st = lastStats;
     if (!st) return;
     const b = primary();
-    let s = `${VIEW_NAMES[view]}  PALLETS ${state.pallets.length}  UNITS ${st.units}  HEIGHT ${fmt(st.top)}`;
+    let s = `${VIEW_NAMES[view]}  ${state.noPallet ? 'NO PALLET' : `PALLETS ${state.pallets.length}`}  UNITS ${st.units}  HEIGHT ${fmt(st.top)}`;
     if (b) {
       s += sel.size > 1
         ? `\n▶ ${sel.size} PIECES SELECTED${selectedBoxes().some((x) => !x.placed) ? '  [SPACE=DROP]' : ''}`
@@ -1540,6 +1770,7 @@
   function refresh() {
     const st = analyse();
     lastStats = st;
+    if (state.noPallet) rebuildPallets();   // the load outline follows the pieces
     syncMeshes();
     renderPallets(st);
     renderSelected();
@@ -1589,6 +1820,9 @@
       e.target.value = state.gap;
       save();
     });
+    $('usePallets').addEventListener('change', (e) => setNoPallet(!e.target.checked));
+    $('btnFitPallet').addEventListener('click', fitPalletToLoad);
+    $('btnSameColour').addEventListener('click', selectSameColour);
     $('btnAddRight').addEventListener('click', () => addPallet('right'));
     $('btnAddBelow').addEventListener('click', () => addPallet('front'));
 
