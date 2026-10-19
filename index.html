@@ -82,7 +82,7 @@
           <li><kbd>←↑↓→</kbd> move (camera-relative)</li>
           <li><kbd>Shift</kbd>+arrows fine 1 cm</li>
           <li><kbd>Space</kbd> drop / lift</li>
-          <li><kbd>R</kbd> rotate 90° &nbsp;<kbd>T</kbd> tip onto its back</li>
+          <li><kbd>R</kbd> rotate 90° &nbsp;<kbd>T</kbd> upright → on back → on side</li>
           <li>Cabinets are hollow: drop a smaller unit into an open-top one, or slide it in through the open front with the arrows</li>
           <li><kbd>Ctrl</kbd>+click multi-select &nbsp;<kbd>Ctrl</kbd>+<kbd>A</kbd> all</li>
           <li><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> copy / cut / paste</li>
@@ -108,6 +108,7 @@
         <div class="btn-group">
           <button id="btnUndo" title="Undo (Ctrl+Z)">UNDO</button>
           <button id="btnAutoAll" title="Re-stack every piece automatically">AUTO-PACK ALL</button>
+          <button id="btnOrient" title="Let auto-pack turn units onto their back or side when that packs better">ORIENT: ANY</button>
           <button id="btnStackMode" title="Allow units to be stacked on top of each other (applies to AUTO-PACK ALL and the checks)">STACKING: ON</button>
           <button id="btnClear" class="danger">CLEAR</button>
           <button id="btnExport">EXPORT</button>
@@ -138,6 +139,7 @@
         </div>
         <label class="check" id="dLidWrap"><input type="checkbox" id="dLid"> Lid (top panel)</label>
         <label class="check" title="Untick if nothing may be loaded on top of this unit"><input type="checkbox" id="dStack"> Stackable (units can go on top)</label>
+        <label class="check" title="Adds 5 cm of packaging (bubble wrap or similar) on every side, top and bottom"><input type="checkbox" id="dWrap"> Packed around (+5 cm each side)</label>
         <div class="color-row">
           <input type="color" id="dColor">
           <div class="swatches" id="dSwatches"></div>
@@ -160,6 +162,7 @@
           </div>
           <label class="check" id="sLidWrap"><input type="checkbox" id="sLid"> Lid (top panel)</label>
         <label class="check" title="Untick if nothing may be loaded on top of this unit"><input type="checkbox" id="sStack"> Stackable (units can go on top)</label>
+        <label class="check" title="Adds 5 cm of packaging (bubble wrap or similar) on every side, top and bottom"><input type="checkbox" id="sWrap"> Packed around (+5 cm each side)</label>
           <div class="grid3">
             <label>X (cm)<input type="number" id="sX" step="0.5"></label>
             <label>Z (cm)<input type="number" id="sZ" step="0.5"></label>

@@ -300,3 +300,4 @@ button.wide:not(.primary) { width: 100%; margin-top: 8px; }
 #btnFitPallet { font-size: 8px; line-height: 1.4; }
 #btnStackMode.off { background: var(--danger); color: #000; }
 .space-toggle { margin-top: 12px; }
+#btnOrient.off { background: var(--accent-2); color: #000; }

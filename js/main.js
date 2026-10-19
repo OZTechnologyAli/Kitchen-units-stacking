@@ -30,6 +30,7 @@
   const SAMPLES = 16;          // grid resolution for curved-footprint overlap estimates
   const MARGIN = 150;          // how far off the pallets a piece may wander
   const BOARD = 1.8;           // default carcass board thickness (18 mm)
+  const WRAP = 5;              // "packed around": packaging added on every side (cm)
 
   const SHAPES = [
     { key: 'cab', label: 'CABINET' },
@@ -77,6 +78,7 @@
     gap: 0,
     noPallet: false,  // size a load on the open floor, with no pallet
     allowStack: true, // false: nothing may rest on top of another unit
+    anyOrient: true,  // auto-pack may tip units onto their back or side
     // No-pallet mode: an optional fixed space (a van, a crate…) the load must fit in.
     fit: { on: false, w: 340, d: 170, h: 180 },
     boxes: [],      // { id, name, shape, w, h, d, arm, rot, color, x, z, y, placed, hy }
@@ -101,24 +103,47 @@
   const fmt = (v) => `${round1(v)}`;
   const pct = (v) => `${Math.round(v * 1000) / 10}%`;
 
+  // tip: 0 standing upright, 1 lying on its back, 2 lying on its side.
   // The unit's own [width, height, depth], undoing tip and rotation.
   function origDims(b) {
     const W = b.rot % 2 ? b.d : b.w, D = b.rot % 2 ? b.w : b.d;
-    return b.tip ? [W, D, b.h] : [W, b.h, D];
+    return b.tip === 1 ? [W, D, b.h] : b.tip === 2 ? [b.h, W, D] : [W, b.h, D];
   }
   // Set the placed bounding size from the unit's own dimensions.
   function applyDims(b, W0, H0, D0) {
-    const [W1, H1, D1] = b.tip ? [W0, D0, H0] : [W0, H0, D0];
+    const [W1, H1, D1] = b.tip === 1 ? [W0, D0, H0] : b.tip === 2 ? [H0, W0, D0] : [W0, H0, D0];
     if (b.rot % 2) { b.w = D1; b.d = W1; } else { b.w = W1; b.d = D1; }
     b.h = H1;
   }
+
+  // The unit itself, without its packaging.
+  function coreOf(b) {
+    const p = b.wrap || 0;
+    const o = origDims(b);
+    const c = { ...b, wrap: 0 };
+    applyDims(c, o[0] - 2 * p, o[1] - 2 * p, o[2] - 2 * p);
+    if (c.shape === 'L') c.arm = b.arm - 2 * p;
+    return c;
+  }
+  // Add or remove packaging, keeping the unit itself where it is.
+  function setWrap(b, amount) {
+    const delta = amount - (b.wrap || 0);
+    if (!delta) return;
+    const o = origDims(b);
+    applyDims(b, o[0] + 2 * delta, o[1] + 2 * delta, o[2] + 2 * delta);
+    b.x = round1(b.x - delta); b.z = round1(b.z - delta);
+    if (b.shape === 'L') b.arm += 2 * delta;
+    b.wrap = amount;
+  }
+  // The unit's own size without packaging, as [W, H, D].
+  const coreDims = (b) => origDims(b).map((v) => v - 2 * (b.wrap || 0));
 
   // Fill in / repair the shape-related fields of a piece or spec.
   function normalizeShape(s) {
     if (!SHAPES.some((x) => x.key === s.shape)) s.shape = 'box';
     s.w = num(s.w, 60); s.h = num(s.h, 72); s.d = num(s.d, 56);
     s.rot = ((s.rot | 0) % 4 + 4) % 4;
-    s.tip = s.tip ? 1 : 0;
+    s.tip = [0, 1, 2].includes(+s.tip) ? +s.tip : (s.tip ? 1 : 0);
     const o = origDims(s);
     if (s.shape === 'cyl') { s.rot = 0; s.tip = 0; o[2] = o[0]; }
     if (s.shape === 'L') s.tip = 0;
@@ -149,6 +174,7 @@
       placed: raw.placed !== false,
       hy: +raw.hy || 0,
       stackable: raw.stackable !== false,
+      wrap: Math.max(0, +raw.wrap || 0),   // packaging thickness on every side; w/h/d include it
     });
   }
 
@@ -179,7 +205,7 @@
   function panelsLocal(b) {
     const [W0, H0, D0] = origDims(b);
     let list;
-    if (b.shape === 'cab') {
+    if (b.shape === 'cab' && !b.wrap) {   // a wrapped cabinet is closed: a solid block
       const t = b.board;
       list = [
         [0, t, 0, H0, 0, D0],                 // left side
@@ -193,9 +219,12 @@
     }
     list = list.map(([x0, x1, y0, y1, z0, z1]) => ({ x0, x1, y0, y1, z0, z1 }));
     let H = H0, D = D0, W = W0;
-    if (b.tip) {   // lie on its back: (y, z) -> (z, H - y); the open front faces up
+    if (b.tip === 1) {   // lie on its back: (y, z) -> (z, H - y); the open front faces up
       list = list.map((p) => ({ x0: p.x0, x1: p.x1, y0: p.z0, y1: p.z1, z0: H - p.y1, z1: H - p.y0 }));
       [H, D] = [D, H];
+    } else if (b.tip === 2) {   // lie on its side: (x, y) -> (y, W - x); the right side is underneath
+      list = list.map((p) => ({ x0: p.y0, x1: p.y1, y0: W - p.x1, y1: W - p.x0, z0: p.z0, z1: p.z1 }));
+      [W, H] = [H, W];
     }
     for (let i = 0; i < b.rot; i++) {
       const DD = D;
@@ -220,7 +249,7 @@
 
   // World-space parts: plan primitive + local height range, memoised on the piece.
   function parts(b) {
-    const key = `${b.shape}|${b.x}|${b.z}|${b.w}|${b.h}|${b.d}|${b.rot}|${b.tip}|${b.arm}|${b.board}|${b.lid}`;
+    const key = `${b.shape}|${b.x}|${b.z}|${b.w}|${b.h}|${b.d}|${b.rot}|${b.tip}|${b.arm}|${b.board}|${b.lid}|${b.wrap}`;
     if (b._pk === key) return b._parts;
     let p;
     if (b.shape === 'cyl') {
@@ -508,7 +537,7 @@
     const load = all.filter((b) => !b.aside);
     // A unit whose whole envelope sits inside a cabinet's envelope is nested:
     // it takes up no extra load space.
-    const within = (b, o) => o !== b && o.shape === 'cab' &&
+    const within = (b, o) => o !== b && o.shape === 'cab' && !o.wrap &&
       b.x >= o.x - EPS && b.x + b.w <= o.x + o.w + EPS && b.z >= o.z - EPS && b.z + b.d <= o.z + o.d + EPS &&
       b.y >= o.y - EPS && b.y + b.h <= o.y + o.h + EPS;
     for (const b of load) {
@@ -543,7 +572,8 @@
       : state.pallets;
     if (state.noPallet) per.set(0, { units: 0, vol: 0, covered: 0 });
     let covered = 0, cells = 0, area = 0, capacity = 0;
-    vol = occupiedVolume(load);
+    // in a set space, only what is inside it counts
+    vol = occupiedVolume(fitOn() ? load.filter((b) => !b.outside) : load);
     for (const P of floors) {
       const nx = Math.ceil(P.w), nz = Math.ceil(P.d);
       const grid = new Uint8Array(nx * nz);
@@ -581,11 +611,11 @@
   // ---------------------------------------------------------------- persistence + undo
   const cleanBox = (b) => ({
     id: b.id, name: b.name, shape: b.shape, w: b.w, h: b.h, d: b.d, arm: b.arm, rot: b.rot, tip: b.tip,
-    board: b.board, lid: b.lid, stackable: b.stackable,
+    board: b.board, lid: b.lid, stackable: b.stackable, wrap: b.wrap,
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
-    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet, allowStack: state.allowStack, fit: state.fit,
+    pallets: state.pallets, maxH: state.maxH, gap: state.gap, noPallet: state.noPallet, allowStack: state.allowStack, anyOrient: state.anyOrient, fit: state.fit,
     boxes: state.boxes.map(cleanBox), nextId: state.nextId, nextPalletId: state.nextPalletId,
   });
 
@@ -606,6 +636,7 @@
     state.gap = Math.max(0, +data.gap || 0);
     state.noPallet = !!data.noPallet;
     state.allowStack = data.allowStack !== false;
+    state.anyOrient = data.anyOrient !== false;
     const f = data.fit || {};
     state.fit = { on: !!f.on, w: num(f.w, 340), d: num(f.d, 170), h: num(f.h, 180) };
     let maxId = 0;
@@ -869,9 +900,10 @@
 
   // The unit's own size (as built, not as placed).
   function dimsText(b) {
-    if (b.shape === 'cyl') return `Ø${fmt(b.w)}×${fmt(b.h)}`;
-    const [W, H, D] = origDims(b);
-    return `${fmt(W)}×${fmt(H)}×${fmt(D)}`;
+    const pack = b.wrap ? ` +${fmt(b.wrap)}` : '';
+    const [W, H, D] = coreDims(b);
+    if (b.shape === 'cyl') return `Ø${fmt(W)}×${fmt(H)}${pack}`;
+    return `${fmt(W)}×${fmt(H)}×${fmt(D)}${pack}`;
   }
 
   // Merge several (indexed) geometries into one non-indexed geometry.
@@ -908,12 +940,26 @@
     return geos.length === 1 ? geos[0] : mergeGeos(geos);
   }
 
+  const wrapMat = new THREE.MeshStandardMaterial({
+    color: 0xdfe9ff, transparent: true, opacity: 0.3, roughness: 0.25, depthWrite: false,
+  });
+
   function buildBoxMesh(b) {
-    const geo = buildGeometry(b);
     const mat = new THREE.MeshStandardMaterial({ color: b.color, roughness: 0.6, metalness: 0.05 });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    let geo, mesh, core = null;
+    if (b.wrap) {
+      // The unit itself, inside a see-through shell of packaging.
+      core = new THREE.Mesh(buildGeometry(coreOf(b)), mat);
+      core.castShadow = true;
+      core.receiveShadow = true;
+      geo = buildGeometry({ ...b, shape: b.shape === 'cab' ? 'box' : b.shape, wrap: 0 });
+      mesh = new THREE.Mesh(geo, wrapMat);
+    } else {
+      geo = buildGeometry(b);
+      mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    }
     mesh.userData.id = b.id;
     const edgeGeo = new THREE.EdgesGeometry(geo, 25);
     const edges = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x05070f }));
@@ -949,6 +995,7 @@
 
     const group = new THREE.Group();
     group.add(mesh, edges, label, ghost);
+    if (core) group.add(core);
     return { group, mesh, label, edges, ghost, mat };
   }
 
@@ -962,7 +1009,7 @@
       if (!ids.has(id)) { boxRoot.remove(m.group); disposeTree(m.group); meshes.delete(id); }
     }
     for (const b of state.boxes) {
-      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.stackable}|${b.color}|${b.name}`;
+      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.stackable}|${b.wrap}|${b.color}|${b.name}`;
       let m = meshes.get(b.id);
       if (!m || m.key !== key) {
         if (m) { boxRoot.remove(m.group); disposeTree(m.group); }
@@ -1081,7 +1128,8 @@
   function spawn(spec) {
     pushUndo();
     const P = state.noPallet ? (() => { const B = palletBounds(); return { x: B.x0, z: B.z0, w: B.x1 - B.x0, d: B.z1 - B.z0 }; })() : selPallet();
-    const s = normalizeShape({ ...spec });
+    const s = normalizeShape({ ...spec, wrap: 0 });
+    if (spec.wrap) setWrap(s, spec.wrap);
     const b = makeBox({
       ...s,
       x: Math.round(P.x + (P.w - s.w) / 2),
@@ -1180,7 +1228,7 @@
     pushUndo();
     for (const b of boxes) {
       const o = origDims(b);
-      b.tip ^= 1;
+      b.tip = (b.tip + 1) % 3;
       applyDims(b, o[0], o[1], o[2]);
     }
     shiftGroup(boxes, 0, 0);
@@ -1190,7 +1238,8 @@
     setStatus(boxes.length < list.length
       ? `Tipped ${boxes.length} piece(s); cylinders and L-corners stay upright.`
       : boxes.length > 1 ? `${boxes.length} pieces tipped.`
-      : one.tip ? `${one.name} laid on its back${one.shape === 'cab' ? ' — open side up' : ''}: now ${fmt(one.h)} cm tall.`
+      : one.tip === 1 ? `${one.name} laid on its back${one.shape === 'cab' ? ' — open side up' : ''}: now ${fmt(one.h)} cm tall. T again lays it on its side.`
+      : one.tip === 2 ? `${one.name} laid on its side: now ${fmt(one.h)} cm tall. T again stands it up.`
       : `${one.name} stood upright: now ${fmt(one.h)} cm tall.`);
   }
 
@@ -1249,40 +1298,69 @@
   }
 
   // --- auto placement
-  // Placements auto-place may try for a piece: quarter turns in plan, keeping
-  // its current tip (a cabinet the user laid on its back stays on its back).
-  // A box or cabinet too tall to stand under the height limit is also tried
-  // lying on its back.
-  function orientations(b) {
+  // Packing strategies. 'upright' keeps each unit as it stands (turning it in
+  // plan, and laying it down only if it is too tall to stand). With any
+  // orientation allowed, 'flat' also tries every way up and prefers the one
+  // that keeps the load lowest, and 'fit' prefers the smallest footprint so
+  // units turn to slot into gaps. Auto-pack runs each and keeps the best.
+  const STRATEGIES = [
+    { key: 'upright', any: false },
+    { key: 'flat', any: true, pref: (t) => t.y + t.h },
+    { key: 'fit', any: true, pref: (t) => t.w * t.d },
+  ];
+  const strategies = () => (state.anyOrient ? STRATEGIES : STRATEGIES.slice(0, 1));
+
+  // Placements to try for a piece. Boxes and cabinets can stand upright, lie
+  // on their back or lie on their side (tip 0/1/2), each turned in plan.
+  function orientations(b, any) {
     const o = origDims(b);
-    const rots = b.shape === 'cyl' ? [0] : b.shape === 'box' && !b.tip && o[0] === o[2] ? [0] : b.shape === 'box' ? [0, 1] : [0, 1, 2, 3];
-    const make = (tip) => rots.map((rot) => {
-      const c = { shape: b.shape, tip, rot, arm: b.arm, board: b.board, lid: b.lid, stackable: b.stackable, w: 0, h: 0, d: 0 };
-      applyDims(c, o[0], o[1], o[2]);
-      return c;
-    });
-    const list = make(b.tip);
-    if ((b.shape === 'box' || b.shape === 'cab') && list.every((c) => c.h > heightLimit() + EPS)) list.push(...make(b.tip ^ 1));
-    return list;
+    const flex = b.shape === 'box' || b.shape === 'cab';
+    const out = [], seen = new Set();
+    const add = (tip, rots) => {
+      for (const rot of rots) {
+        const c = {
+          shape: b.shape, tip, rot, arm: b.arm, board: b.board, lid: b.lid, wrap: b.wrap,
+          stackable: b.stackable, w: 0, h: 0, d: 0,
+        };
+        applyDims(c, o[0], o[1], o[2]);
+        // a solid box looks the same in orientations with equal sizes
+        const key = b.shape === 'box' ? `${c.w}|${c.h}|${c.d}` : `${tip}|${rot}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(c);
+      }
+    };
+    const rotsFor = (tip) => (b.shape === 'cyl' ? [0] : b.shape === 'box' ? [0, 1]
+      : b.shape === 'L' || tip === b.tip ? [0, 1, 2, 3] : [0, 1]);
+    const tips = !flex ? [0] : any ? [b.tip, ...[0, 1, 2].filter((t) => t !== b.tip)] : [b.tip];
+    for (const tip of tips) add(tip, rotsFor(tip));
+    // Too tall to stand: lay it down, if lying down is allowed at all.
+    if (!any && flex && state.anyOrient && out.every((c) => c.h > heightLimit() + EPS)) {
+      for (const tip of [0, 1, 2]) if (tip !== b.tip) add(tip, [0, 1]);
+    }
+    return out;
   }
 
-  function better(a, b) {
+  function better(a, b, pref) {
     if (Math.abs(a.y - b.y) > EPS) return a.y < b.y;
     if (a.pi !== b.pi) return a.pi < b.pi;
+    if (pref) { const pa = pref(a), pb = pref(b); if (Math.abs(pa - pb) > EPS) return pa < pb; }
     if (Math.abs(a.z - b.z) > EPS) return a.z < b.z;
     return a.x < b.x - EPS;
   }
 
-  // Best resting spot for `b`: lowest, then earliest pallet, then furthest
-  // back, then furthest left; fully on one pallet, balanced, broadly supported
-  // and under the height limit. Candidate positions line up with every board
-  // edge, so units are tried inside open cabinets too. Returns null if none.
-  function findSpot(b, others, areas = packAreas()) {
+  // Best resting spot for `b`: lowest, then earliest pallet, then the
+  // strategy's preference, then furthest back, then furthest left; fully on
+  // one pallet, balanced, broadly supported and under the height limit.
+  // Candidate positions line up with every board edge, so units are tried
+  // inside open cabinets too. Returns null if none.
+  function findSpot(b, others, areas = packAreas(), strat = STRATEGIES[0]) {
     let best = null;
     areas.forEach((P, pi) => {
-      for (const c of orientations(b)) {
+      for (const c of orientations(b, strat.any)) {
         const { w, d } = c;
         if (w > P.w + EPS || d > P.d + EPS) continue;
+        if (c.h > (P.h || heightLimit()) + EPS) continue;
         const xs = new Set([P.x, round1(P.x + P.w - w)]);
         const zs = new Set([P.z, round1(P.z + P.d - d)]);
         for (const q of others) {
@@ -1298,7 +1376,7 @@
             const t = { ...c, x, z, y: 0, pi };
             t.y = landingY(t, others);
             if (t.y + t.h > (P.h || heightLimit()) + EPS) continue;
-            if (best && !better(t, best)) continue;
+            if (best && !better(t, best, strat.pref)) continue;
             const k = contact(t, others);
             if (!k.stable || k.spread < 0.7 || k.onNoStack) continue;
             best = t;
@@ -1310,9 +1388,10 @@
   }
 
   // --- packing without a pallet
-  function betterFree(a, b) {
+  function betterFree(a, b, pref) {
     if (Math.abs(a.area - b.area) > 1) return a.area < b.area;
     if (Math.abs(a.y - b.y) > EPS) return a.y < b.y;
+    if (pref) { const pa = pref(a), pb = pref(b); if (Math.abs(pa - pb) > EPS) return pa < pb; }
     if (Math.abs(a.z - b.z) > EPS) return a.z < b.z;
     return a.x < b.x - EPS;
   }
@@ -1320,13 +1399,14 @@
   // Free-floor spot for `b` next to / on top of / inside `others`: the one
   // that grows the load's footprint least, then the lowest, back-most,
   // left-most. `limitD` (if set) caps how deep the load may get.
-  function findSpotFree(b, others, limitD) {
+  function findSpotFree(b, others, limitD, strat = STRATEGIES[0]) {
     const G = others.length ? groupBounds(others) : null;
     const ox = G ? G.x0 : 0, oz = G ? G.z0 : 0;
     let best = null;
-    for (const c of orientations(b)) {
+    for (const c of orientations(b, strat.any)) {
       const { w, d } = c;
       if (limitD && d > limitD + EPS) continue;
+      if (c.h > heightLimit() + EPS) continue;
       const xs = new Set([ox]), zs = new Set([oz]);
       for (const q of others) {
         for (const r of parts(q)) {
@@ -1345,7 +1425,7 @@
           if (best && t.area > best.area + 1) continue;
           t.y = landingY(t, others);
           if (t.y + t.h > heightLimit() + EPS) continue;
-          if (best && !betterFree(t, best)) continue;
+          if (best && !betterFree(t, best, strat.pref)) continue;
           if (others.length) {
             const k = contact(t, others);
             if (!k.stable || k.spread < 0.7 || k.onNoStack) continue;
@@ -1357,40 +1437,75 @@
     return best;
   }
 
-  // Pack `list` from scratch on an empty floor, trying several load depths,
-  // and keep the layout with the smallest footprint (then lowest, then
-  // squarest). Returns { boxes: [{id, x, z, y, w, h, d, rot}], w, d, h } or null.
+  const applySpot = (b, spot) => Object.assign(b, {
+    x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, tip: spot.tip, y: spot.y, placed: true,
+  });
+
+  // Trial-pack copies of the pieces in `order`, placing each with `place`.
+  // Returns the placed copies, the pieces that did not fit, the height and how
+  // many pieces ended up lying differently from how they stood.
+  function simulate(order, place) {
+    const done = [], left = [];
+    let moved = 0;
+    for (const b of order) {
+      const c = makeBox(cleanBox(b), b.id);
+      const spot = place(c, done);
+      if (!spot) { left.push(b); continue; }
+      applySpot(c, spot);
+      if (c.tip !== b.tip) moved++;
+      done.push(c);
+    }
+    return { boxes: done, left, moved, top: done.length ? Math.max(...done.map((c) => c.y + c.h)) : 0 };
+  }
+
+  // Pack onto the pallets / into the set space with each strategy and keep
+  // the result that fits the most pieces, then is lowest, then turns the
+  // fewest pieces over.
+  function packBest(list) {
+    const order = packOrder(list);
+    let best = null;
+    for (const st of strategies()) {
+      const r = simulate(order, (c, done) => findSpot(c, done, packAreas(), st));
+      if (!best || r.left.length < best.left.length ||
+          (r.left.length === best.left.length && (r.top < best.top - EPS ||
+          (Math.abs(r.top - best.top) <= EPS && r.moved < best.moved)))) best = r;
+    }
+    return best;
+  }
+
+  // Pack `list` from scratch on an empty floor, trying several load depths
+  // and each strategy, and keep the layout with the smallest footprint (then
+  // lowest, then squarest, then fewest pieces turned over).
+  // Returns { boxes, w, d, h, moved } or null.
   function packFree(list) {
     const order = packOrder(list);
     const depths = new Set([0]);
     let need = 0, maxD = 0;
     for (const b of order) {
-      const ds = orientations(b).map((c) => c.d);
+      const ds = orientations(b, state.anyOrient).filter((c) => c.h <= heightLimit() + EPS).map((c) => c.d);
+      if (!ds.length) return null;
       need = Math.max(need, Math.min(...ds));
       for (const d of ds) { depths.add(d); maxD = Math.max(maxD, d); }
     }
     depths.add(maxD * 2); depths.add(maxD * 3);
-    const limits = [...depths].filter((d) => d === 0 || d >= need - EPS).sort((a, b) => a - b).slice(0, 12);
+    const limits = [...depths].filter((d) => d === 0 || d >= need - EPS).sort((a, b) => a - b).slice(0, 10);
     let best = null;
-    for (const limit of limits) {
-      const done = [];
-      let ok = true;
-      for (const b of order) {
-        const c = makeBox(cleanBox(b), b.id);
-        const spot = findSpotFree(c, done, limit);
-        if (!spot) { ok = false; break; }
-        Object.assign(c, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, tip: spot.tip, y: spot.y, placed: true });
-        done.push(c);
+    for (const st of strategies()) {
+      for (const limit of limits) {
+        const r = simulate(order, (c, done) => findSpotFree(c, done, limit, st));
+        if (r.left.length) continue;
+        const G = groupBounds(r.boxes);
+        Object.assign(r, { w: G.x1 - G.x0, d: G.z1 - G.z0, h: r.top });
+        r.area = r.w * r.d;
+        // Footprints within 3% count as a tie, settled by the lower, then the
+        // more compact (squarer) layout, then the one turning fewer pieces.
+        const sq = (x) => Math.max(x.w, x.d) / Math.min(x.w, x.d);
+        const tie = best && Math.abs(r.area - best.area) <= 0.03 * Math.min(r.area, best.area);
+        if (!best || (!tie && r.area < best.area) ||
+            (tie && (r.h < best.h - EPS ||
+            (Math.abs(r.h - best.h) <= EPS && (sq(r) < sq(best) - 0.01 ||
+            (Math.abs(sq(r) - sq(best)) <= 0.01 && r.moved < best.moved)))))) best = r;
       }
-      if (!ok) continue;
-      const G = groupBounds(done);
-      const r = {
-        boxes: done, w: G.x1 - G.x0, d: G.z1 - G.z0, h: Math.max(...done.map((b) => b.y + b.h)),
-      };
-      r.area = r.w * r.d;
-      if (!best || r.area < best.area - 1 ||
-          (Math.abs(r.area - best.area) <= 1 && (r.h < best.h - EPS ||
-          (Math.abs(r.h - best.h) <= EPS && Math.abs(r.w - r.d) < Math.abs(best.w - best.d))))) best = r;
     }
     return best;
   }
@@ -1400,20 +1515,27 @@
     for (const c of result.boxes) {
       const b = getBox(c.id);
       const from = displayY(b);
-      Object.assign(b, { x: round1(c.x + dx), z: round1(c.z + dz), w: c.w, h: c.h, d: c.d, rot: c.rot, tip: c.tip, y: c.y, placed: true });
+      applySpot(b, { ...c, x: c.x + dx, z: c.z + dz });
       anim.set(b.id, { from, start: performance.now() });
     }
   }
 
   const sizeText = (r) => `${fmt(r.w)} W × ${fmt(r.d)} D × ${fmt(r.h)} H cm`;
-  const tooTallFor = (list) => list.find((b) => Math.min(...orientations(b).map((c) => c.h)) > heightLimit() + EPS);
+  const movedText = (r) => (r.moved ? ` ${r.moved} turned onto ${r.moved === 1 ? 'its back or side' : 'their backs or sides'} to fit better.` : '');
+  const tooTallFor = (list) => list.find((b) => Math.min(...orientations(b, state.anyOrient).map((c) => c.h)) > heightLimit() + EPS);
 
+  // Place one piece: keep it as it stands if possible, otherwise let the
+  // other strategies turn it.
   function autoPlace(b) {
     const others = placedBoxes().filter((o) => o !== b);
-    const spot = state.noPallet && !fitOn() ? findSpotFree(b, others, 0) : findSpot(b, others);
+    let spot = null;
+    for (const st of strategies()) {
+      spot = state.noPallet && !fitOn() ? findSpotFree(b, others, 0, st) : findSpot(b, others, packAreas(), st);
+      if (spot) break;
+    }
     if (!spot) return false;
     const from = displayY(b);
-    Object.assign(b, { x: round1(spot.x), z: round1(spot.z), w: spot.w, h: spot.h, d: spot.d, rot: spot.rot, tip: spot.tip, y: spot.y, placed: true });
+    applySpot(b, spot);
     anim.set(b.id, { from, start: performance.now() });
     return true;
   }
@@ -1439,7 +1561,7 @@
   // right of everything else, and report the space they need.
   function packSelectionFree(list) {
     const tall = tooTallFor(list);
-    if (tall) return setStatus(`${tall.name} is taller than the ${fmt(heightLimit())} cm height limit in every orientation.`, true);
+    if (tall) return setStatus(`${tall.name} is taller than the ${fmt(heightLimit())} cm height limit in every allowed orientation.`, true);
     const r = packFree(list);
     if (!r) return setStatus('Could not pack those pieces under the max load height.', true);
     pushUndo();
@@ -1452,28 +1574,29 @@
     settle();
     setView(view, true);
     refresh();
-    setStatus(`Packed ${list.length} pieces into ${sizeText(r)}.`);
+    setStatus(`Packed ${list.length} pieces into ${sizeText(r)}.${movedText(r)}`);
   }
 
-  // Fill the fixed space: largest first, lowest spot first (floor, then
-  // stacked or nested). Pieces that don't fit are set beside it.
+  // Set pieces that didn't fit in a row starting at (x, z).
+  function setAside(left, x, z) {
+    for (const b of left) { b.x = round1(x); b.z = round1(z); b.placed = true; x += b.w + 10; }
+  }
+
+  // Fill the fixed space. Pieces that don't fit are set beside it.
   function packIntoSpace() {
-    pushUndo();
     const F = state.fit;
-    const order = packOrder(state.boxes);
-    for (const b of order) { b.placed = false; b.y = 0; }
-    const left = [];
-    for (const b of order) if (!autoPlace(b)) left.push(b);
-    let x = F.w + 30;
-    for (const b of left) { b.x = x; b.z = 0; b.placed = true; x += b.w + 10; }
+    const r = packBest(state.boxes);
+    pushUndo();
+    applyPacked(r, 0, 0);
+    setAside(r.left, F.w + 30, 0);
     settle();
     setView(view, true);
     const st = analyse();
     refresh();
-    const inSpace = order.length - left.length;
-    setStatus(left.length
-      ? `${inSpace} of ${order.length} pieces fit in the ${fmt(F.w)} × ${fmt(F.d)} × ${fmt(F.h)} space; ${left.length === 1 ? `${left[0].name} did not and is` : `${left.length} did not and are`} set beside it.`
-      : `All ${order.length} pieces fit in the ${fmt(F.w)} × ${fmt(F.d)} × ${fmt(F.h)} space (${pct(st.fill)} of it filled).`, left.length > 0);
+    const n = state.boxes.length, inSpace = n - r.left.length;
+    setStatus((r.left.length
+      ? `${inSpace} of ${n} pieces fit in the ${fmt(F.w)} × ${fmt(F.d)} × ${fmt(F.h)} space; ${r.left.length === 1 ? `${r.left[0].name} did not and is` : `${r.left.length} did not and are`} set beside it.`
+      : `All ${n} pieces fit in the ${fmt(F.w)} × ${fmt(F.d)} × ${fmt(F.h)} space (${pct(st.fill)} of it filled).`) + movedText(r), r.left.length > 0);
   }
 
   function autoPackAll() {
@@ -1481,7 +1604,7 @@
     if (fitOn()) return packIntoSpace();
     if (state.noPallet) {
       const tall = tooTallFor(state.boxes);
-      if (tall) return setStatus(`${tall.name} is taller than the ${fmt(heightLimit())} cm height limit in every orientation.`, true);
+      if (tall) return setStatus(`${tall.name} is taller than the ${fmt(heightLimit())} cm height limit in every allowed orientation.`, true);
       const r = packFree(state.boxes);
       if (!r) return setStatus('Could not pack the pieces under the max load height.', true);
       pushUndo();
@@ -1489,21 +1612,20 @@
       settle();
       setView(view, true);
       refresh();
-      return setStatus(`Packed all ${state.boxes.length} pieces into ${sizeText(r)}. Use MAKE PALLET THIS SIZE to get a matching pallet.`);
+      return setStatus(`Packed all ${state.boxes.length} pieces into ${sizeText(r)}.${movedText(r)} Use MAKE PALLET THIS SIZE to get a matching pallet.`);
     }
+    const r = packBest(state.boxes);
     pushUndo();
-    const order = packOrder(state.boxes);
-    for (const b of order) { b.placed = false; b.y = 0; }
+    applyPacked(r, 0, 0);
     const B = palletBounds();
-    let failed = 0;
-    for (const b of order) {
-      if (!autoPlace(b)) { failed++; b.x = B.x0 - b.w - 20; b.z = B.z0; b.placed = true; }
-    }
+    const wide = r.left.reduce((s, b) => s + b.w + 10, 0);
+    setAside(r.left, B.x0 - wide - 20, B.z0);
     settle();
     refresh();
-    setStatus(failed
-      ? `Packed ${order.length - failed} pieces; ${failed} did not fit and were set beside the pallets.`
-      : `Packed all ${order.length} pieces.`, failed > 0);
+    const n = state.boxes.length;
+    setStatus((r.left.length
+      ? `Packed ${n - r.left.length} pieces; ${r.left.length} did not fit and were set beside the pallets.`
+      : `Packed all ${n} pieces.`) + movedText(r), r.left.length > 0);
   }
 
   // --- pallets
@@ -1680,10 +1802,10 @@
     const g = cv.getContext('2d');
     const W = cv.width, H = cv.height;
     g.clearRect(0, 0, W, H);
-    const caption = draft.shape === 'cyl' ? `Ø${fmt(draft.w)} × ${fmt(draft.h)} H`
+    const caption = (draft.shape === 'cyl' ? `Ø${fmt(draft.w)} × ${fmt(draft.h)} H`
       : draft.shape === 'L' ? `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D · arm ${fmt(draft.arm)}`
       : draft.shape === 'cab' ? `${fmt(draft.w)}×${fmt(draft.h)}×${fmt(draft.d)} · ${fmt(draft.board)} board · ${draft.lid ? 'lid' : 'open top'}`
-      : `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D`;
+      : `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D`) + (draft.wrap ? ` · +${draft.wrap} packed` : '');
     const writeCaption = () => {
       g.fillStyle = '#8592c4';
       g.font = '11px ui-monospace, Menlo, Consolas, monospace';
@@ -1754,6 +1876,7 @@
     $('dBoard').value = draft.board || '';
     $('dLid').checked = !!draft.lid;
     $('dStack').checked = draft.stackable !== false;
+    $('dWrap').checked = !!draft.wrap;
     $('dColor').value = draft.color;
     markSwatch($('dSwatches'), draft.color);
     markShape($('dShape'), draft.shape);
@@ -1812,8 +1935,9 @@
     tag.classList.toggle('hover', anyHover);
     const setIfIdle = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v; };
     setIfIdle('sName', b.name);
-    const [W0, H0, D0] = origDims(b);
-    setIfIdle('sW', W0); setIfIdle('sH', H0); setIfIdle('sD', D0); setIfIdle('sArm', b.arm || '');
+    const [W0, H0, D0] = coreDims(b);
+    setIfIdle('sW', W0); setIfIdle('sH', H0); setIfIdle('sD', D0); setIfIdle('sArm', b.arm ? b.arm - 2 * (b.wrap || 0) : '');
+    $('sWrap').checked = !!b.wrap;
     setIfIdle('sBoard', b.board || '');
     $('sLid').checked = !!b.lid;
     $('sStack').checked = b.stackable !== false;
@@ -1874,7 +1998,7 @@
         f.textContent = `⚠ ${flags.join(', ')}`;
         li.children[1].appendChild(f);
       }
-      li.children[2].textContent = `${dimsText(b)}${b.stackable === false ? ' · no stack' : ''}${b.inside != null ? ` · in #${b.inside}` : ''}${b.palId && state.pallets.length > 1 ? ` · P${palIndex.get(b.palId)}` : ''}`;
+      li.children[2].textContent = `${dimsText(b)}${b.wrap ? ' packed' : ''}${b.stackable === false ? ' · no stack' : ''}${b.inside != null ? ` · in #${b.inside}` : ''}${b.palId && state.pallets.length > 1 ? ` · P${palIndex.get(b.palId)}` : ''}`;
       li.addEventListener('click', (e) => {
         if (e.ctrlKey || e.metaKey) toggleSelected(b.id);
         else setSelection([b.id], b.id);
@@ -1888,6 +2012,9 @@
     const sm = $('btnStackMode');
     sm.textContent = state.allowStack ? 'STACKING: ON' : 'STACKING: OFF';
     sm.classList.toggle('off', !state.allowStack);
+    const om = $('btnOrient');
+    om.textContent = state.anyOrient ? 'ORIENT: ANY' : 'ORIENT: UPRIGHT';
+    om.classList.toggle('off', !state.anyOrient);
     $('sPallets').textContent = state.noPallet ? 'none' : state.pallets.length;
     $('sSize').textContent = st.size ? `${fmt(st.size.w)}×${fmt(st.size.d)}×${fmt(st.size.h)}` : '–';
     $('sUnits').textContent = st.units;
@@ -2021,6 +2148,7 @@
     buildShapeSeg($('dShape'), (shape) => { draft.shape = shape; draft.arm = undefined; syncDraftInputs(); });
     $('dName').addEventListener('input', (e) => { draft.name = e.target.value || 'Box'; });
     $('dLid').addEventListener('change', (e) => { draft.lid = e.target.checked; drawPreview(); });
+    $('dWrap').addEventListener('change', (e) => { draft.wrap = e.target.checked ? WRAP : 0; drawPreview(); });
     $('dStack').addEventListener('change', (e) => {
       draft.stackable = e.target.checked;
       if (!draft.stackable && state.boxes.length) {
@@ -2049,6 +2177,11 @@
       if (shape === 'cyl') b.d = b.w;
     }));
     $('sLid').addEventListener('change', (e) => editSelected((b) => { if (b.shape === 'cab') b.lid = e.target.checked; }));
+    $('sWrap').addEventListener('change', (e) => {
+      const on = e.target.checked;
+      editSelected((b) => setWrap(b, on ? WRAP : 0));
+      setStatus(on ? `Packed around: ${WRAP} cm of packaging added on every side.` : 'Packaging removed.');
+    });
     $('sStack').addEventListener('change', (e) => {
       const on = e.target.checked;
       editSelected((b) => { b.stackable = on; });
@@ -2073,17 +2206,18 @@
         const v = num(e.target.value, null);
         if (v != null) {
           editSelected((b) => {
-            if (key === 'arm') { if (b.shape === 'L') b.arm = v; return; }
+            const pad = 2 * (b.wrap || 0);
+            if (key === 'arm') { if (b.shape === 'L') b.arm = v + pad; return; }
             if (key === 'board') { if (b.shape === 'cab') b.board = v; return; }
             if (key === 'd' && b.shape === 'cyl') return;
             const o = origDims(b);
-            o[DIM[key]] = v;
-            if (b.shape === 'cyl' && key === 'w') o[2] = v;
+            o[DIM[key]] = v + pad;
+            if (b.shape === 'cyl' && key === 'w') o[2] = v + pad;
             applyDims(b, o[0], o[1], o[2]);
           });
         }
         const p = primary();
-        if (p) e.target.value = key in DIM ? origDims(p)[DIM[key]] : p[key] || '';
+        if (p) e.target.value = key in DIM ? coreDims(p)[DIM[key]] : key === 'arm' ? p.arm - 2 * (p.wrap || 0) : p[key] || '';
       });
     });
     [['sX', 'x'], ['sZ', 'z']].forEach(([id, key]) => {
@@ -2114,6 +2248,14 @@
     document.querySelectorAll('[data-view]').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
     $('btnUndo').addEventListener('click', undo);
     $('btnAutoAll').addEventListener('click', autoPackAll);
+    $('btnOrient').addEventListener('click', () => {
+      pushUndo();
+      state.anyOrient = !state.anyOrient;
+      refresh();
+      setStatus(state.anyOrient
+        ? 'Any orientation: auto-pack may turn units onto their back or side if that packs better.'
+        : 'Upright only: auto-pack keeps every unit the way it stands (it still turns them in plan).');
+    });
     $('btnStackMode').addEventListener('click', () => {
       pushUndo();
       state.allowStack = !state.allowStack;

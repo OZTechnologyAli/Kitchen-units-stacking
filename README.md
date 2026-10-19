@@ -14,8 +14,10 @@ A small 3D browser game for working out how to stack kitchen cupboards on a pall
 - **Cabinets are hollow carcasses.** Each one is built from boards: two sides, a back and a base, plus a lid you can switch on or off. The front is open. You set its width, height, depth and the board thickness (1.8 cm, i.e. 18 mm, by default). Because the middle is empty, you can put one unit inside another:
   - **Drop it in:** a unit dropped over an open-top cabinet falls inside and lands on the base board.
   - **Slide it in:** a unit pushed with the arrow keys against a cabinet's open front steps up onto the base board and slides inside, provided it fits under the lid.
-  - **Lay it on its back:** **T** lays a cabinet on its back so the open side faces up, ready to be filled.
+  - **Lay it on its back:** **T** lays a cabinet on its back so the open side faces up, ready to be filled (press T again to lay it on its side, and again to stand it up).
 - **Other shapes:** **solid box**, **cylinder** (set by diameter) and **L-corner** (an L-shaped corner unit with a set arm depth). Presets cover base, wall, tall and drawer cabinets (base units default to no lid; wall and tall units have one), plus a carton, an L-corner, a drum and a tube.
+- **Best orientation:** with **ORIENT: ANY** (next to AUTO-PACK ALL), auto-pack may stand a box or cabinet upright, lay it on its back or lay it on its side, and turn it in plan. It packs the load several ways (keeping units upright, laying them flat to stay low, turning them to fill gaps) and keeps whichever fits the most units, then is lowest, then turns the fewest over. The status bar says how many were turned. Switch to **ORIENT: UPRIGHT** to keep every unit standing (they are still turned in plan).
+- **Packed around:** tick **Packed around (+5 cm each side)** to add 5 cm of packaging (bubble wrap or similar) on every side of a unit, top and bottom included. The unit is drawn inside a see-through shell, its packed size is what's stacked and packed, and a wrapped cabinet counts as closed, so nothing nests inside it. The W/H/D fields keep showing the unit's own size. Select several units to wrap or unwrap them all at once.
 - **Stacking on/off:** the **STACKING: ON / OFF** button next to AUTO-PACK ALL switches stacking for the whole load. When it's off, AUTO-PACK ALL lays every unit side by side in a single layer (units can still go *inside* open cabinets), and anything you stack by hand is flagged.
 - **Stackable or not, per unit:** every unit also has its own **Stackable** checkbox, ticked by default. Untick it for units that mustn't carry a load; their label then reads NO STACK. Anything placed on top of one turns orange and counts as an issue, and auto-place / auto-pack never stack onto it. Putting a unit *inside* a non-stackable open cabinet (on its base board) is still allowed. Select several units first to change them all at once.
 - **Gameplay works like Tetris.** A new piece hovers over the pallet, with a ghost outline showing where it will land. Move it around and press **Space** to drop it. It falls until one of its boards meets one below, so it can stack on top of another unit or land inside an open one.
@@ -36,7 +38,7 @@ A small 3D browser game for working out how to stack kitchen cupboards on a pall
 | Arrow keys | Move the piece. Movement follows the camera, so ↑ always moves the piece away from you |
 | Shift + arrows | Move in 1 cm steps. The normal step size is set in the Selected panel |
 | Space | Drop the hovering piece, or lift a placed one |
-| R / T | Rotate 90° / lay a cabinet or box on its back (T again stands it up) |
+| R / T | Rotate 90° / turn a cabinet or box: upright → on its back → on its side → upright |
 | Ctrl+click | Add a piece to the selection, or remove it. Moving, rotating, dropping and editing then apply to every selected piece |
 | Ctrl+A | Select every piece |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste the selected pieces. Pasted pieces hover in the same spot and keep their arrangement |
