@@ -209,8 +209,10 @@
   function panelsLocal(b) {
     const [W0, H0, D0] = origDims(b);
     let list;
-    if (b.shape === 'cab' && !b.wrap) {   // a wrapped cabinet is closed: a solid block
-      const t = b.board;
+    if (b.shape === 'cab') {
+      // Packaging thickens every board on the outside; the opening stays open,
+      // so a packed cabinet is still hollow and units can nest inside it.
+      const t = b.board + (b.wrap || 0);
       list = [
         [0, t, 0, H0, 0, D0],                 // left side
         [W0 - t, W0, 0, H0, 0, D0],           // right side
@@ -541,7 +543,7 @@
     const load = all.filter((b) => !b.aside);
     // A unit whose whole envelope sits inside a cabinet's envelope is nested:
     // it takes up no extra load space.
-    const within = (b, o) => o !== b && o.shape === 'cab' && !o.wrap &&
+    const within = (b, o) => o !== b && o.shape === 'cab' &&
       b.x >= o.x - EPS && b.x + b.w <= o.x + o.w + EPS && b.z >= o.z - EPS && b.z + b.d <= o.z + o.d + EPS &&
       b.y >= o.y - EPS && b.y + b.h <= o.y + o.h + EPS;
     for (const b of load) {
@@ -956,7 +958,8 @@
       core = new THREE.Mesh(buildGeometry(coreOf(b)), mat);
       core.castShadow = true;
       core.receiveShadow = true;
-      geo = buildGeometry({ ...b, shape: b.shape === 'cab' ? 'box' : b.shape, wrap: 0 });
+      // the packaging: a cabinet's thickened boards, or the outer solid
+      geo = buildGeometry(b);
       mesh = new THREE.Mesh(geo, wrapMat);
     } else {
       geo = buildGeometry(b);

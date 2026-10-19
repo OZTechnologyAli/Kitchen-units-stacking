@@ -304,3 +304,4 @@ button.wide:not(.primary) { width: 100%; margin-top: 8px; }
 .wrap-row { display: flex; align-items: center; gap: 6px; margin: 2px 0 10px; }
 .wrap-row label.check { margin: 0; }
 .wrap-row input[type=number] { width: 64px; margin: 0; }
+.wrap-row label.check, .wrap-row .muted { white-space: nowrap; }
