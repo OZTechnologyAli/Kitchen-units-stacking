@@ -30,7 +30,7 @@
   const SAMPLES = 16;          // grid resolution for curved-footprint overlap estimates
   const MARGIN = 150;          // how far off the pallets a piece may wander
   const BOARD = 1.8;           // default carcass board thickness (18 mm)
-  const WRAP = 5;              // "packed around": packaging added on every side (cm)
+  const WRAP = 5;              // default "packed around" packaging on every side (cm)
 
   const SHAPES = [
     { key: 'cab', label: 'CABINET' },
@@ -89,6 +89,10 @@
   let primaryId = null;         // the piece whose values the panel shows
   let palletSelId = 1;
   let step = 5;
+  // Packaging thickness the Packed around boxes apply (one each for the
+  // Next Piece and Selected panels).
+  let draftWrapAmt = WRAP, selWrapAmt = WRAP;
+  const wrapAmt = (v, fallback) => Math.min(30, Math.max(0.5, num(v, fallback)));
   let clipboard = null;         // array of piece specs (internal copy/paste buffer)
   const undoStack = [];
 
@@ -1877,6 +1881,8 @@
     $('dLid').checked = !!draft.lid;
     $('dStack').checked = draft.stackable !== false;
     $('dWrap').checked = !!draft.wrap;
+    if (draft.wrap) draftWrapAmt = draft.wrap;
+    $('dWrapAmt').value = draftWrapAmt;
     $('dColor').value = draft.color;
     markSwatch($('dSwatches'), draft.color);
     markShape($('dShape'), draft.shape);
@@ -1938,6 +1944,8 @@
     const [W0, H0, D0] = coreDims(b);
     setIfIdle('sW', W0); setIfIdle('sH', H0); setIfIdle('sD', D0); setIfIdle('sArm', b.arm ? b.arm - 2 * (b.wrap || 0) : '');
     $('sWrap').checked = !!b.wrap;
+    if (b.wrap) selWrapAmt = b.wrap;
+    setIfIdle('sWrapAmt', selWrapAmt);
     setIfIdle('sBoard', b.board || '');
     $('sLid').checked = !!b.lid;
     $('sStack').checked = b.stackable !== false;
@@ -2148,7 +2156,14 @@
     buildShapeSeg($('dShape'), (shape) => { draft.shape = shape; draft.arm = undefined; syncDraftInputs(); });
     $('dName').addEventListener('input', (e) => { draft.name = e.target.value || 'Box'; });
     $('dLid').addEventListener('change', (e) => { draft.lid = e.target.checked; drawPreview(); });
-    $('dWrap').addEventListener('change', (e) => { draft.wrap = e.target.checked ? WRAP : 0; drawPreview(); });
+    $('dWrap').addEventListener('change', (e) => { draft.wrap = e.target.checked ? draftWrapAmt : 0; drawPreview(); });
+    $('dWrapAmt').addEventListener('change', (e) => {
+      draftWrapAmt = wrapAmt(e.target.value, draftWrapAmt);
+      e.target.value = draftWrapAmt;
+      draft.wrap = draftWrapAmt;           // setting a thickness switches packaging on
+      $('dWrap').checked = true;
+      drawPreview();
+    });
     $('dStack').addEventListener('change', (e) => {
       draft.stackable = e.target.checked;
       if (!draft.stackable && state.boxes.length) {
@@ -2179,8 +2194,15 @@
     $('sLid').addEventListener('change', (e) => editSelected((b) => { if (b.shape === 'cab') b.lid = e.target.checked; }));
     $('sWrap').addEventListener('change', (e) => {
       const on = e.target.checked;
-      editSelected((b) => setWrap(b, on ? WRAP : 0));
-      setStatus(on ? `Packed around: ${WRAP} cm of packaging added on every side.` : 'Packaging removed.');
+      editSelected((b) => setWrap(b, on ? selWrapAmt : 0));
+      setStatus(on ? `Packed around: ${fmt(selWrapAmt)} cm of packaging added on every side.` : 'Packaging removed.');
+    });
+    $('sWrapAmt').addEventListener('change', (e) => {
+      selWrapAmt = wrapAmt(e.target.value, selWrapAmt);
+      e.target.value = selWrapAmt;
+      // setting a thickness wraps the selection at that thickness
+      editSelected((b) => setWrap(b, selWrapAmt));
+      setStatus(`Packed around: ${fmt(selWrapAmt)} cm of packaging on every side.`);
     });
     $('sStack').addEventListener('change', (e) => {
       const on = e.target.checked;
