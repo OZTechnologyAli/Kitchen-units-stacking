@@ -305,3 +305,5 @@ button.wide:not(.primary) { width: 100%; margin-top: 8px; }
 .wrap-row label.check { margin: 0; }
 .wrap-row input[type=number] { width: 64px; margin: 0; }
 .wrap-row label.check, .wrap-row .muted { white-space: nowrap; }
+.panel-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 2px 0 8px; }
+.panel-checks label.check { margin: 0; }

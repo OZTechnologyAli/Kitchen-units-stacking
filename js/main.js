@@ -160,9 +160,13 @@
       const maxB = Math.max(0.1, Math.min(o[0] / 2, o[1] / 2, o[2]) - 0.5);
       s.board = Math.min(Math.max(num(s.board, BOARD), 0.1), maxB);
       s.lid = s.lid !== false;
+      s.front = !!s.front;              // door side: open unless ticked
+      s.side1 = s.side1 !== false;
+      s.side2 = s.side2 !== false;
     } else {
       s.board = undefined;
       s.lid = undefined;
+      s.front = s.side1 = s.side2 = undefined;
     }
     return s;
   }
@@ -173,6 +177,7 @@
       name: String(raw.name || 'Box').slice(0, 24),
       shape: raw.shape,
       w: raw.w, h: raw.h, d: raw.d, arm: raw.arm, rot: raw.rot, tip: raw.tip, board: raw.board, lid: raw.lid,
+      front: raw.front, side1: raw.side1, side2: raw.side2,
       color: /^#[0-9a-f]{6}$/i.test(raw.color) ? raw.color.toLowerCase() : '#4f8cff',
       x: round1(+raw.x || 0), z: round1(+raw.z || 0), y: +raw.y || 0,
       placed: raw.placed !== false,
@@ -213,13 +218,18 @@
       // Packaging thickens every board on the outside; the opening stays open,
       // so a packed cabinet is still hollow and units can nest inside it.
       const t = b.board + (b.wrap || 0);
+      // Sides run full height and depth; the back, base, lid and front fit
+      // between them, or run out to the edge where a side is missing.
+      const x0 = b.side1 ? t : 0, x1 = b.side2 ? W0 - t : W0;
+      const zf = b.front ? D0 - t : D0;   // where the inside ends at the front
       list = [
-        [0, t, 0, H0, 0, D0],                 // left side
-        [W0 - t, W0, 0, H0, 0, D0],           // right side
-        [t, W0 - t, 0, H0, 0, t],             // back
-        [t, W0 - t, 0, t, t, D0],             // base
+        [x0, x1, 0, H0, 0, t],                // back
+        [x0, x1, 0, t, t, zf],                // base
       ];
-      if (b.lid) list.push([t, W0 - t, H0 - t, H0, t, D0]);
+      if (b.side1) list.push([0, t, 0, H0, 0, D0]);          // side 1 (left, seen from the front)
+      if (b.side2) list.push([W0 - t, W0, 0, H0, 0, D0]);    // side 2 (right)
+      if (b.lid) list.push([x0, x1, H0 - t, H0, t, zf]);     // lid
+      if (b.front) list.push([x0, x1, 0, H0, D0 - t, D0]);   // front (door)
     } else {
       list = [[0, W0, 0, H0, 0, D0]];
     }
@@ -255,7 +265,7 @@
 
   // World-space parts: plan primitive + local height range, memoised on the piece.
   function parts(b) {
-    const key = `${b.shape}|${b.x}|${b.z}|${b.w}|${b.h}|${b.d}|${b.rot}|${b.tip}|${b.arm}|${b.board}|${b.lid}|${b.wrap}`;
+    const key = `${b.shape}|${b.x}|${b.z}|${b.w}|${b.h}|${b.d}|${b.rot}|${b.tip}|${b.arm}|${b.board}|${b.lid}|${b.front}|${b.side1}|${b.side2}|${b.wrap}`;
     if (b._pk === key) return b._parts;
     let p;
     if (b.shape === 'cyl') {
@@ -617,7 +627,7 @@
   // ---------------------------------------------------------------- persistence + undo
   const cleanBox = (b) => ({
     id: b.id, name: b.name, shape: b.shape, w: b.w, h: b.h, d: b.d, arm: b.arm, rot: b.rot, tip: b.tip,
-    board: b.board, lid: b.lid, stackable: b.stackable, wrap: b.wrap,
+    board: b.board, lid: b.lid, front: b.front, side1: b.side1, side2: b.side2, stackable: b.stackable, wrap: b.wrap,
     color: b.color, x: b.x, z: b.z, y: b.y, placed: b.placed, hy: b.hy,
   });
   const snapshot = () => JSON.stringify({
@@ -1016,7 +1026,7 @@
       if (!ids.has(id)) { boxRoot.remove(m.group); disposeTree(m.group); meshes.delete(id); }
     }
     for (const b of state.boxes) {
-      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.stackable}|${b.wrap}|${b.color}|${b.name}`;
+      const key = `${b.shape}|${b.w}|${b.h}|${b.d}|${b.arm}|${b.rot}|${b.tip}|${b.board}|${b.lid}|${b.front}|${b.side1}|${b.side2}|${b.stackable}|${b.wrap}|${b.color}|${b.name}`;
       let m = meshes.get(b.id);
       if (!m || m.key !== key) {
         if (m) { boxRoot.remove(m.group); disposeTree(m.group); }
@@ -1326,7 +1336,7 @@
     const add = (tip, rots) => {
       for (const rot of rots) {
         const c = {
-          shape: b.shape, tip, rot, arm: b.arm, board: b.board, lid: b.lid, wrap: b.wrap,
+          shape: b.shape, tip, rot, arm: b.arm, board: b.board, lid: b.lid, front: b.front, side1: b.side1, side2: b.side2, wrap: b.wrap,
           stackable: b.stackable, w: 0, h: 0, d: 0,
         };
         applyDims(c, o[0], o[1], o[2]);
@@ -1771,6 +1781,16 @@
     $(`${prefix}LidWrap`).hidden = shape !== 'cab';
   }
 
+  // Which faces of a cabinet are open, for captions.
+  function openText(b) {
+    const open = [];
+    if (!b.lid) open.push('top');
+    if (!b.front) open.push('front');
+    if (b.side1 === false) open.push('side 1');
+    if (b.side2 === false) open.push('side 2');
+    return open.length ? `open ${open.join(', ')}` : 'closed';
+  }
+
   // Isometric drawing of a box / cabinet as its boards, back to front.
   function drawPanelsPreview(g, W, H) {
     const c30 = Math.cos(Math.PI / 6), s30 = 0.5;
@@ -1811,12 +1831,13 @@
     g.clearRect(0, 0, W, H);
     const caption = (draft.shape === 'cyl' ? `Ø${fmt(draft.w)} × ${fmt(draft.h)} H`
       : draft.shape === 'L' ? `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D · arm ${fmt(draft.arm)}`
-      : draft.shape === 'cab' ? `${fmt(draft.w)}×${fmt(draft.h)}×${fmt(draft.d)} · ${fmt(draft.board)} board · ${draft.lid ? 'lid' : 'open top'}`
+      : draft.shape === 'cab' ? `${fmt(draft.w)}×${fmt(draft.h)}×${fmt(draft.d)} · ${fmt(draft.board)} board · ${openText(draft)}`
       : `${fmt(draft.w)} W × ${fmt(draft.h)} H × ${fmt(draft.d)} D`) + (draft.wrap ? ` · +${draft.wrap} packed` : '');
     const writeCaption = () => {
       g.fillStyle = '#8592c4';
-      g.font = '11px ui-monospace, Menlo, Consolas, monospace';
       g.textAlign = 'center';
+      let fs = 11;   // shrink a long caption to fit the width
+      do { g.font = `${fs}px ui-monospace, Menlo, Consolas, monospace`; } while (g.measureText(caption).width > W - 8 && --fs > 7);
       g.fillText(caption, W / 2, H - 6);
     };
     if (draft.shape === 'box' || draft.shape === 'cab') { drawPanelsPreview(g, W, H); writeCaption(); return; }
@@ -1882,6 +1903,9 @@
     $('dArm').value = draft.arm || '';
     $('dBoard').value = draft.board || '';
     $('dLid').checked = !!draft.lid;
+    $('dFront').checked = !!draft.front;
+    $('dSide1').checked = draft.side1 !== false;
+    $('dSide2').checked = draft.side2 !== false;
     $('dStack').checked = draft.stackable !== false;
     $('dWrap').checked = !!draft.wrap;
     if (draft.wrap) draftWrapAmt = draft.wrap;
@@ -1951,6 +1975,9 @@
     setIfIdle('sWrapAmt', selWrapAmt);
     setIfIdle('sBoard', b.board || '');
     $('sLid').checked = !!b.lid;
+    $('sFront').checked = !!b.front;
+    $('sSide1').checked = b.side1 !== false;
+    $('sSide2').checked = b.side2 !== false;
     $('sStack').checked = b.stackable !== false;
     setIfIdle('sX', b.x); setIfIdle('sZ', b.z);
     $('sY').value = round1(b.y);
@@ -2159,6 +2186,11 @@
     buildShapeSeg($('dShape'), (shape) => { draft.shape = shape; draft.arm = undefined; syncDraftInputs(); });
     $('dName').addEventListener('input', (e) => { draft.name = e.target.value || 'Box'; });
     $('dLid').addEventListener('change', (e) => { draft.lid = e.target.checked; drawPreview(); });
+    for (const k of ['front', 'side1', 'side2']) {
+      const id = k === 'front' ? 'Front' : k === 'side1' ? 'Side1' : 'Side2';
+      $(`d${id}`).addEventListener('change', (e) => { draft[k] = e.target.checked; drawPreview(); });
+      $(`s${id}`).addEventListener('change', (e) => editSelected((b) => { if (b.shape === 'cab') b[k] = e.target.checked; }));
+    }
     $('dWrap').addEventListener('change', (e) => { draft.wrap = e.target.checked ? draftWrapAmt : 0; drawPreview(); });
     $('dWrapAmt').addEventListener('change', (e) => {
       draftWrapAmt = wrapAmt(e.target.value, draftWrapAmt);
